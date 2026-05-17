@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -5,17 +7,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
+COPY requirements-prod.txt ./
 
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir \
-        "apscheduler>=3.10.4" \
-        "fastapi>=0.110.0" \
-        "jinja2>=3.1.3" \
-        "python-multipart>=0.0.9" \
-        "pytrends>=4.9.2" \
-        "requests>=2.31.0" \
-        "uvicorn[standard]>=0.27.0"
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install -r requirements-prod.txt
 
 COPY googletrends_app ./googletrends_app
 
