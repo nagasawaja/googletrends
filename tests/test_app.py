@@ -246,6 +246,48 @@ def test_alert_cooldown_suppresses_repeated_same_category(tmp_path) -> None:
     assert len(notifier.messages) == 1
 
 
+def test_alert_remark_can_be_saved_and_displayed(tmp_path) -> None:
+    db_path = tmp_path / "test.sqlite3"
+    provider = FakeProvider()
+    app = create_app(
+        db_path=db_path,
+        trends_provider=provider,
+        notifier=FakeNotifier(),
+        start_scheduler=False,
+        request_delay_seconds=0,
+    )
+
+    with TestClient(app) as client:
+        with connect(db_path) as conn:
+            keyword = repository.create_keyword(conn, "AI")
+            created = repository.insert_alert(
+                conn,
+                keyword_id=keyword["id"],
+                rule="trend_radar:now 7-d:warming_up",
+                severity="P2",
+                category="warming_up",
+                timeframe=SHORT_TIMEFRAME,
+                point_date="2026-05-17T11:00:00+08:00",
+                current_value=40,
+                baseline_value=20,
+                change_pct=100,
+                message="短线搜索热度小幅升温，建议观察是否持续放量。",
+            )
+            alert_id = repository.list_alerts(conn)[0]["id"]
+
+        assert created is True
+        response = client.post(
+            f"/alerts/{alert_id}/remark",
+            data={"remark": "已确认，有价值"},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"remark": "已确认，有价值"}
+
+        alerts_page = client.get("/alerts")
+        assert alerts_page.status_code == 200
+        assert "已确认，有价值" in alerts_page.text
+
+
 def test_backtest_page_lists_simulated_alerts(tmp_path) -> None:
     db_path = tmp_path / "test.sqlite3"
     provider = FakeProvider()

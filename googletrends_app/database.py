@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     current_value REAL,
     baseline_value REAL,
     change_pct REAL,
+    remark TEXT NOT NULL DEFAULT '',
     message TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (keyword_id) REFERENCES keywords(id) ON DELETE CASCADE,
@@ -88,6 +89,7 @@ MIGRATIONS: dict[str, dict[str, str]] = {
         "current_value": "ALTER TABLE alerts ADD COLUMN current_value REAL",
         "baseline_value": "ALTER TABLE alerts ADD COLUMN baseline_value REAL",
         "change_pct": "ALTER TABLE alerts ADD COLUMN change_pct REAL",
+        "remark": "ALTER TABLE alerts ADD COLUMN remark TEXT NOT NULL DEFAULT ''",
     },
 }
 

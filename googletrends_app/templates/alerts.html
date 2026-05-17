@@ -22,6 +22,7 @@
         <th>变化</th>
         <th>规则</th>
         <th>消息</th>
+        <th>备注</th>
         <th>创建时间</th>
       </tr>
     </thead>
@@ -44,12 +45,20 @@
           <td>{{ "%+.1f%%"|format(alert.change_pct) if alert.change_pct is not none else "N/A" }}</td>
           <td>{{ alert.rule }}</td>
           <td>{{ alert.message }}</td>
+          <td class="remark-cell" data-alert-id="{{ alert.id }}" data-remark="{{ alert.remark }}">
+            <button class="remark-display" type="button">
+              {{ alert.remark if alert.remark else "点击添加备注" }}
+            </button>
+          </td>
           <td>{{ alert.created_at|bjtime }}</td>
         </tr>
       {% else %}
-        <tr><td colspan="11" class="empty">暂无告警。</td></tr>
+        <tr><td colspan="12" class="empty">暂无告警。</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </section>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', path='/alert-remarks.js') }}"></script>
 {% endblock %}

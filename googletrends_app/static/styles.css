@@ -124,7 +124,8 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #ffffff;
@@ -133,6 +134,15 @@ select {
   min-height: 40px;
   padding: 8px 10px;
   width: 100%;
+}
+
+textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+textarea.error {
+  border-color: var(--danger);
 }
 
 .button {
@@ -381,6 +391,40 @@ tr:last-child td {
   color: var(--danger);
   max-width: 360px;
   overflow-wrap: anywhere;
+}
+
+.remark-cell {
+  min-width: 180px;
+  vertical-align: top;
+}
+
+.remark-display {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1.45;
+  max-width: 260px;
+  overflow-wrap: anywhere;
+  padding: 0;
+  text-align: left;
+}
+
+.remark-display:hover {
+  color: var(--primary-dark);
+  text-decoration: underline;
+}
+
+.remark-editor {
+  display: grid;
+  gap: 8px;
+  min-width: 220px;
+}
+
+.remark-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .filters {

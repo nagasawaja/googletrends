@@ -311,6 +311,18 @@ def alerts(
     )
 
 
+@router.post("/alerts/{alert_id}/remark")
+def update_alert_remark(
+    alert_id: int,
+    remark: str = Form(""),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict[str, str]:
+    updated = repository.update_alert_remark(conn, alert_id, remark)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Alert not found.")
+    return {"remark": updated["remark"]}
+
+
 @router.get("/backtest", response_class=HTMLResponse)
 def backtest_page(
     request: Request,

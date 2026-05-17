@@ -506,6 +506,35 @@ def has_recent_alert(
     return row is not None
 
 
+def get_alert(conn: sqlite3.Connection, alert_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT a.*, k.term
+        FROM alerts a
+        JOIN keywords k ON k.id = a.keyword_id
+        WHERE a.id = ?
+        """,
+        (alert_id,),
+    ).fetchone()
+
+
+def update_alert_remark(
+    conn: sqlite3.Connection,
+    alert_id: int,
+    remark: str,
+) -> sqlite3.Row | None:
+    conn.execute(
+        """
+        UPDATE alerts
+        SET remark = ?
+        WHERE id = ?
+        """,
+        (remark.strip(), alert_id),
+    )
+    conn.commit()
+    return get_alert(conn, alert_id)
+
+
 def list_alerts(conn: sqlite3.Connection, limit: int = 100) -> list[sqlite3.Row]:
     return list(
         conn.execute(
