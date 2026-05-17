@@ -40,6 +40,23 @@ GOOGLETRENDS_P2_ALERT_COOLDOWN_HOURS=24
 
 When `FEISHU_WEBHOOK_URL` is not set, notifications are disabled.
 
+## Run With Docker
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+```
+
+Open <http://127.0.0.1:8000>. The compose service mounts `./data` into the container, so SQLite data survives container restarts.
+
+Useful commands:
+
+```bash
+docker compose logs -f
+docker compose ps
+docker compose down
+```
+
 ## Alert Model
 
 The radar uses three windows:
