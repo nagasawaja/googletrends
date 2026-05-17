@@ -170,8 +170,7 @@ def index(
         name="index.html",
         context={
             "request": request,
-            "keywords": repository.list_keywords(conn),
-            "available_timeframes": AVAILABLE_TIMEFRAMES,
+            "keyword_items": build_keyword_list_items(conn, repository.list_keywords(conn)),
             "error": error,
             "message": message,
         },
@@ -228,9 +227,15 @@ async def update_keyword_timeframes(
         if isinstance(value, str) and value in AVAILABLE_TIMEFRAMES
     ]
     if not selected:
-        return redirect("/", error="At least one timeframe must be selected.")
+        return redirect(f"/keywords/{keyword_id}", error="At least one timeframe must be selected.")
     repository.update_keyword_timeframes(conn, keyword_id, selected)
-    return redirect("/", message="Keyword timeframes updated.")
+    next_url = form.get("next_url")
+    target = (
+        str(next_url)
+        if isinstance(next_url, str) and next_url.startswith("/") and not next_url.startswith("//")
+        else f"/keywords/{keyword_id}"
+    )
+    return redirect(target, message="Keyword timeframes updated.")
 
 
 @router.post("/keywords/{keyword_id}/delete")
@@ -269,6 +274,7 @@ def keyword_detail(
             "runs": runs,
             "timeframe": timeframe,
             "timeframes": AVAILABLE_TIMEFRAMES,
+            "selected_timeframes": repository.keyword_timeframes(keyword),
         },
     )
 
@@ -279,17 +285,22 @@ def collect_one(
     request: Request,
     conn: sqlite3.Connection = Depends(get_db),
 ) -> RedirectResponse:
-    ensure_keyword(conn, keyword_id)
+    keyword = ensure_keyword(conn, keyword_id)
+    selected_timeframes = repository.keyword_timeframes(keyword)
     jobs = collector.enqueue_keyword_jobs(
         conn,
         keyword_id=keyword_id,
         source="manual",
         max_attempts=request.app.state.max_attempts,
+        timeframes=selected_timeframes,
     )
     worker.start_worker(request.app)
     return redirect(
         f"/keywords/{keyword_id}",
-        message=f"Queued {len(jobs)} collection jobs.",
+        message=(
+            f"Queued {len(jobs)} collection jobs for: "
+            f"{', '.join(selected_timeframes)}."
+        ),
     )
 
 
@@ -421,10 +432,16 @@ def redirect(path: str, message: str | None = None, error: str | None = None) ->
 
 
 def build_chart(points: list[sqlite3.Row]) -> dict[str, object]:
-    width = 900
-    height = 280
-    padding_x = 32
-    padding_y = 20
+    return build_chart_with_size(points, width=900, height=280, padding_x=32, padding_y=20)
+
+
+def build_chart_with_size(
+    points: list[sqlite3.Row],
+    width: int,
+    height: int,
+    padding_x: int,
+    padding_y: int,
+) -> dict[str, object]:
     if not points:
         return {
             "width": width,
@@ -457,7 +474,10 @@ def build_chart(points: list[sqlite3.Row]) -> dict[str, object]:
         f"{'M' if index == 0 else 'L'} {coord['x']} {coord['y']}"
         for index, coord in enumerate(coords)
     )
-    point_radius = 2.4 if len(points) > 120 else 3.2
+    if height <= 100:
+        point_radius = 1.5 if len(points) > 80 else 2.0
+    else:
+        point_radius = 2.4 if len(points) > 120 else 3.2
     return {
         "width": width,
         "height": height,
@@ -465,6 +485,51 @@ def build_chart(points: list[sqlite3.Row]) -> dict[str, object]:
         "points": coords,
         "point_radius": point_radius,
     }
+
+
+def build_keyword_list_items(
+    conn: sqlite3.Connection,
+    keywords: list[sqlite3.Row],
+) -> list[dict[str, object]]:
+    items: list[dict[str, object]] = []
+    for keyword in keywords:
+        timeframe, points = select_preview_points(conn, keyword)
+        chart = build_chart_with_size(
+            points,
+            width=340,
+            height=96,
+            padding_x=10,
+            padding_y=10,
+        )
+        items.append(
+            {
+                "keyword": keyword,
+                "preview_timeframe": timeframe,
+                "preview_points": points,
+                "preview_latest": points[-1] if points else None,
+                "chart": chart,
+            }
+        )
+    return items
+
+
+def select_preview_points(
+    conn: sqlite3.Connection,
+    keyword: sqlite3.Row,
+) -> tuple[str, list[sqlite3.Row]]:
+    selected = set(repository.keyword_timeframes(keyword))
+    ordered_timeframes = [item for item in AVAILABLE_TIMEFRAMES if item in selected]
+    if not ordered_timeframes:
+        ordered_timeframes = list(MONITORED_TIMEFRAMES)
+
+    timeframe = ordered_timeframes[0]
+    points = repository.list_trend_points(
+        conn,
+        keyword["id"],
+        limit=80,
+        timeframe=timeframe,
+    )
+    return timeframe, points
 
 
 app = create_app()

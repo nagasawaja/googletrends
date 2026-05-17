@@ -203,6 +203,7 @@ th {
   font-size: 12px;
   font-weight: 750;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 tr:last-child td {
@@ -219,6 +220,69 @@ tr:last-child td {
   text-decoration: underline;
 }
 
+.keyword-cell {
+  min-width: 180px;
+  vertical-align: top;
+}
+
+.keyword-remark {
+  margin-top: 6px;
+}
+
+.trend-preview-cell {
+  min-width: 360px;
+  vertical-align: top;
+}
+
+.trend-preview-head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.trend-preview-head a {
+  color: var(--primary-dark);
+  font-size: 12px;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.trend-preview-head a:hover {
+  text-decoration: underline;
+}
+
+.trend-preview-head span,
+.empty-inline {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.mini-chart-wrap {
+  background: #f8fafb;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  height: 100px;
+  overflow: hidden;
+  padding: 0;
+}
+
+.mini-chart {
+  height: 98px;
+  min-width: 0;
+}
+
+.mini-chart .trend-line {
+  stroke-width: 2.2;
+}
+
+.mini-chart .trend-point {
+  opacity: 0.58;
+  stroke-width: 1.2;
+}
+
 .pill {
   border-radius: 999px;
   display: inline-flex;
@@ -226,6 +290,7 @@ tr:last-child td {
   font-weight: 750;
   line-height: 1;
   padding: 6px 9px;
+  white-space: nowrap;
 }
 
 .pill.ok {
@@ -443,6 +508,17 @@ tr:last-child td {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.timeframe-settings summary {
+  color: var(--primary-dark);
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.timeframe-settings-form {
+  margin-top: 14px;
+  max-width: 520px;
+}
+
 .checkbox-option {
   align-items: center;
   color: var(--text);
@@ -541,6 +617,10 @@ tr:last-child td {
     height: 220px;
     max-width: none;
     min-width: 0;
+  }
+
+  .mini-chart {
+    height: 98px;
   }
 
   .axis-label {

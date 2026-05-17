@@ -5,6 +5,7 @@
   <div>
     <h1>{{ keyword.term }}</h1>
     <p>全球范围，当前查看 {{ timeframe }}。数值为 Google Trends 0-100 归一化指数。</p>
+    <p>已启用周期：{{ selected_timeframes|join(", ") }}</p>
   </div>
   <form method="post" action="/keywords/{{ keyword.id }}/collect">
     <button class="button primary" type="submit">创建全部周期任务</button>
@@ -109,6 +110,30 @@
       </tbody>
     </table>
   </div>
+</section>
+
+<section class="panel">
+  <details class="timeframe-settings">
+    <summary>管理监控周期</summary>
+    <form class="timeframe-form timeframe-settings-form" method="post" action="/keywords/{{ keyword.id }}/timeframes">
+      <input type="hidden" name="next_url" value="/keywords/{{ keyword.id }}?timeframe={{ timeframe }}">
+      {% set selected_timeframes = "," ~ keyword.timeframes ~ "," %}
+      <div class="timeframe-options">
+        {% for item in timeframes %}
+          <label class="checkbox-option">
+            <input
+              type="checkbox"
+              name="timeframes"
+              value="{{ item }}"
+              {% if "," ~ item ~ "," in selected_timeframes %}checked{% endif %}
+            >
+            <span>{{ item }}</span>
+          </label>
+        {% endfor %}
+      </div>
+      <button class="button small" type="submit">保存周期</button>
+    </form>
+  </details>
 </section>
 {% endblock %}
 

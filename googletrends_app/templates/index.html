@@ -4,7 +4,7 @@
 <section class="page-head">
   <div>
     <h1>关键词监控</h1>
-    <p>全球范围，多周期监控：默认 now 7-d 抓短线异动，today 3-m 确认趋势；每个关键词可单独配置周期。</p>
+    <p>全球范围，多周期监控：默认 now 7-d 抓短线异动，today 3-m 确认趋势；首页展示每个关键词当前最短可用周期的趋势。</p>
   </div>
   <form method="post" action="/collect/run-now">
     <button class="button primary" type="submit">创建全部监控任务</button>
@@ -24,8 +24,7 @@
     <thead>
       <tr>
         <th>关键词</th>
-        <th>备注</th>
-        <th>监控周期</th>
+        <th>趋势</th>
         <th>状态</th>
         <th>趋势点</th>
         <th>最近成功</th>
@@ -37,36 +36,45 @@
       </tr>
     </thead>
     <tbody>
-      {% for keyword in keywords %}
+      {% for item in keyword_items %}
+        {% set keyword = item.keyword %}
         <tr>
-          <td><a class="strong-link" href="/keywords/{{ keyword.id }}">{{ keyword.term }}</a></td>
-          <td
-            class="remark-cell"
-            data-save-url="/keywords/{{ keyword.id }}/remark"
-            data-remark="{{ keyword.remark }}"
-          >
-            <button class="remark-display" type="button">
-              {{ keyword.remark if keyword.remark else "点击添加备注" }}
-            </button>
+          <td class="keyword-cell">
+            <a class="strong-link" href="/keywords/{{ keyword.id }}">{{ keyword.term }}</a>
+            <div
+              class="remark-cell keyword-remark"
+              data-save-url="/keywords/{{ keyword.id }}/remark"
+              data-remark="{{ keyword.remark }}"
+            >
+              <button class="remark-display" type="button">
+                {{ keyword.remark if keyword.remark else "点击添加备注" }}
+              </button>
+            </div>
           </td>
-          <td class="timeframe-cell">
-            <form class="timeframe-form" method="post" action="/keywords/{{ keyword.id }}/timeframes">
-              {% set selected_timeframes = "," ~ keyword.timeframes ~ "," %}
-              <div class="timeframe-options">
-                {% for item in available_timeframes %}
-                  <label class="checkbox-option">
-                    <input
-                      type="checkbox"
-                      name="timeframes"
-                      value="{{ item }}"
-                      {% if "," ~ item ~ "," in selected_timeframes %}checked{% endif %}
-                    >
-                    <span>{{ item }}</span>
-                  </label>
-                {% endfor %}
+          <td class="trend-preview-cell">
+            <div class="trend-preview-head">
+              <a href="/keywords/{{ keyword.id }}?timeframe={{ item.preview_timeframe }}">{{ item.preview_timeframe }}</a>
+              {% if item.preview_latest %}
+                <span>最新 {{ item.preview_latest.value }}</span>
+              {% endif %}
+            </div>
+            {% if item.chart.path %}
+              <div class="chart-wrap mini-chart-wrap">
+                <svg class="chart mini-chart" viewBox="0 0 {{ item.chart.width }} {{ item.chart.height }}" preserveAspectRatio="none" role="img" aria-label="{{ keyword.term }} {{ item.preview_timeframe }} trend chart">
+                  <line x1="10" y1="10" x2="10" y2="86" class="chart-crosshair"></line>
+                  <path d="{{ item.chart.path }}" class="trend-line"></path>
+                  {% for point in item.chart.points %}
+                    <g class="trend-hit" data-date="{{ point.display_date }}" data-value="{{ point.value }}" data-x="{{ point.x }}" data-y="{{ point.y }}">
+                      <circle cx="{{ point.x }}" cy="{{ point.y }}" r="{{ item.chart.point_radius }}" class="trend-point"></circle>
+                      <circle cx="{{ point.x }}" cy="{{ point.y }}" r="10" class="trend-hover-target"></circle>
+                    </g>
+                  {% endfor %}
+                </svg>
+                <div class="chart-tooltip" aria-hidden="true"></div>
               </div>
-              <button class="button small" type="submit">保存周期</button>
-            </form>
+            {% else %}
+              <div class="empty-inline">暂无 {{ item.preview_timeframe }} 数据</div>
+            {% endif %}
           </td>
           <td>
             {% if keyword.enabled %}
@@ -106,7 +114,7 @@
         </tr>
       {% else %}
         <tr>
-          <td colspan="11" class="empty">还没有关键词。</td>
+          <td colspan="10" class="empty">还没有关键词。</td>
         </tr>
       {% endfor %}
     </tbody>
@@ -115,4 +123,5 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', path='/remark-editor.js') }}"></script>
+<script src="{{ url_for('static', path='/chart-tooltip.js') }}"></script>
 {% endblock %}

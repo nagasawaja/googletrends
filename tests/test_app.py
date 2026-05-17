@@ -132,6 +132,11 @@ def test_manual_collection_queues_job_and_saves_points(tmp_path) -> None:
         assert "2025-01-15" in detail.text
         assert ">30<" in detail.text
 
+        index = client.get("/")
+        assert "mini-chart" in index.text
+        assert "now 7-d" in index.text
+        assert "最新 30" in index.text
+
 
 def test_keyword_timeframes_can_be_changed_and_used_for_collection(tmp_path) -> None:
     provider = FakeProvider()
@@ -154,6 +159,10 @@ def test_keyword_timeframes_can_be_changed_and_used_for_collection(tmp_path) -> 
             {"term": "ChatGPT", "timeframe": "now 1-d", "geo": ""},
             {"term": "ChatGPT", "timeframe": "today 12-m", "geo": ""},
         ]
+
+        index = client.get("/")
+        assert 'href="/keywords/1?timeframe=now 1-d"' in index.text
+        assert "ChatGPT now 1-d trend chart" in index.text
 
 
 def test_failed_collection_records_job_error_and_notifies(tmp_path) -> None:
