@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS keywords (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     term TEXT NOT NULL UNIQUE COLLATE NOCASE,
     enabled INTEGER NOT NULL DEFAULT 1,
+    remark TEXT NOT NULL DEFAULT '',
+    timeframes TEXT NOT NULL DEFAULT 'now 7-d,today 3-m',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -78,6 +80,10 @@ CREATE TABLE IF NOT EXISTS alerts (
 """
 
 MIGRATIONS: dict[str, dict[str, str]] = {
+    "keywords": {
+        "remark": "ALTER TABLE keywords ADD COLUMN remark TEXT NOT NULL DEFAULT ''",
+        "timeframes": "ALTER TABLE keywords ADD COLUMN timeframes TEXT NOT NULL DEFAULT 'now 7-d,today 3-m'",
+    },
     "collection_jobs": {
         "timeframe": "ALTER TABLE collection_jobs ADD COLUMN timeframe TEXT NOT NULL DEFAULT 'today 12-m'",
         "geo": "ALTER TABLE collection_jobs ADD COLUMN geo TEXT NOT NULL DEFAULT ''",

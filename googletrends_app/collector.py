@@ -10,13 +10,13 @@ from urllib.parse import quote
 from . import repository
 from .database import connect, initialize_database
 from .notifier import Notifier, NullNotifier
+from .time_utils import format_beijing
 from .trends import (
     DEFAULT_GEO,
     DEFAULT_TIMEFRAME,
-    LONG_TIMEFRAME,
-    MID_TIMEFRAME,
-    MONITORED_TIMEFRAMES,
-    SHORT_TIMEFRAME,
+    LONG_TIMEFRAMES,
+    MID_TIMEFRAMES,
+    NOW_TIMEFRAMES,
     TrendsProvider,
 )
 
@@ -24,6 +24,7 @@ ALERT_RULE_PREFIX = "trend_radar"
 DEFAULT_PUBLIC_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_P1_ALERT_COOLDOWN_HOURS = 6
 DEFAULT_P2_ALERT_COOLDOWN_HOURS = 24
+RATE_LIMIT_RETRY_SECONDS = 30 * 60
 
 
 @dataclass(frozen=True)
@@ -147,9 +148,15 @@ def enqueue_keyword_jobs(
     keyword_id: int,
     source: str = "manual",
     max_attempts: int = 3,
-    timeframes: tuple[str, ...] = MONITORED_TIMEFRAMES,
+    timeframes: tuple[str, ...] | None = None,
     geo: str = DEFAULT_GEO,
 ) -> list[sqlite3.Row]:
+    selected_timeframes = timeframes
+    if selected_timeframes is None:
+        keyword = repository.get_keyword(conn, keyword_id)
+        if keyword is None:
+            raise LookupError(f"Keyword id {keyword_id} was not found.")
+        selected_timeframes = repository.keyword_timeframes(keyword)
     return [
         enqueue_keyword_job(
             conn,
@@ -159,7 +166,7 @@ def enqueue_keyword_jobs(
             timeframe=timeframe,
             geo=geo,
         )
-        for timeframe in timeframes
+        for timeframe in selected_timeframes
     ]
 
 
@@ -167,7 +174,7 @@ def enqueue_enabled_jobs(
     conn: sqlite3.Connection,
     source: str = "manual",
     max_attempts: int = 3,
-    timeframes: tuple[str, ...] = MONITORED_TIMEFRAMES,
+    timeframes: tuple[str, ...] | None = None,
     geo: str = DEFAULT_GEO,
 ) -> list[sqlite3.Row]:
     return repository.create_collection_jobs_for_enabled(
@@ -183,7 +190,7 @@ def enqueue_enabled_jobs_for_path(
     db_path: str | Path,
     source: str = "scheduled",
     max_attempts: int = 3,
-    timeframes: tuple[str, ...] = MONITORED_TIMEFRAMES,
+    timeframes: tuple[str, ...] | None = None,
     geo: str = DEFAULT_GEO,
 ) -> list[int]:
     initialize_database(db_path)
@@ -314,6 +321,8 @@ def process_collection_job(
             points_collected=count,
         )
         for alert in alerts:
+            if not should_notify_alert(alert):
+                continue
             notifier.send_text(
                 format_alert_notification(
                     term,
@@ -333,10 +342,16 @@ def process_collection_job(
             "alert_count": len(alerts),
         }
     except Exception as exc:
-        error = str(exc)
+        raw_error = str(exc)
+        error = format_collection_error(raw_error)
         if job["attempts"] < job["max_attempts"]:
+            retry_seconds = next_retry_delay_seconds(
+                raw_error=raw_error,
+                attempts=job["attempts"],
+                retry_delay_seconds=retry_delay_seconds,
+            )
             next_attempt_at = (
-                datetime.now(timezone.utc) + timedelta(seconds=retry_delay_seconds)
+                datetime.now(timezone.utc) + timedelta(seconds=retry_seconds)
             ).isoformat(timespec="seconds")
             repository.requeue_collection_job(
                 conn,
@@ -351,6 +366,7 @@ def process_collection_job(
                 "status": "queued",
                 "error": error,
                 "next_attempt_at": next_attempt_at,
+                "retry_delay_seconds": retry_seconds,
             }
 
         repository.finish_collection_job_failure(
@@ -369,6 +385,28 @@ def process_collection_job(
             "status": "failed",
             "error": error,
         }
+
+
+def is_google_rate_limit_error(error: str) -> bool:
+    text = error.lower()
+    return "code 429" in text or "response with code 429" in text
+
+
+def format_collection_error(error: str) -> str:
+    if is_google_rate_limit_error(error):
+        return "Google Trends 限流 429：请求过于频繁，已自动延后重试。"
+    return error
+
+
+def next_retry_delay_seconds(
+    raw_error: str,
+    attempts: int,
+    retry_delay_seconds: int,
+) -> int:
+    if not is_google_rate_limit_error(raw_error):
+        return retry_delay_seconds
+    multiplier = max(1, 2 ** max(attempts - 1, 0))
+    return RATE_LIMIT_RETRY_SECONDS * multiplier
 
 
 def evaluate_alerts(
@@ -453,7 +491,7 @@ def normalized_alert_points(
     points: list[sqlite3.Row],
     timeframe: str,
 ) -> list[sqlite3.Row]:
-    if timeframe == SHORT_TIMEFRAME:
+    if timeframe in NOW_TIMEFRAMES:
         return points
     return [point for point in points if not point["is_partial"]]
 
@@ -462,16 +500,19 @@ def build_alert_candidates(
     points: list[sqlite3.Row],
     timeframe: str,
 ) -> list[AlertDecision]:
-    if timeframe == SHORT_TIMEFRAME:
-        return build_short_window_alerts(points)
-    if timeframe == MID_TIMEFRAME:
-        return build_mid_window_alerts(points)
-    if timeframe == LONG_TIMEFRAME:
-        return build_long_window_alerts(points)
+    if timeframe in NOW_TIMEFRAMES:
+        return build_short_window_alerts(points, timeframe)
+    if timeframe in MID_TIMEFRAMES:
+        return build_mid_window_alerts(points, timeframe)
+    if timeframe in LONG_TIMEFRAMES:
+        return build_long_window_alerts(points, timeframe)
     return []
 
 
-def build_short_window_alerts(points: list[sqlite3.Row]) -> list[AlertDecision]:
+def build_short_window_alerts(
+    points: list[sqlite3.Row],
+    timeframe: str,
+) -> list[AlertDecision]:
     if len(points) < 12:
         return []
 
@@ -488,7 +529,7 @@ def build_short_window_alerts(points: list[sqlite3.Row]) -> list[AlertDecision]:
     if is_spike(recent_avg, baseline, multiplier=2.5, delta=15, floor=15):
         alerts.append(
             make_alert(
-                timeframe=SHORT_TIMEFRAME,
+                timeframe=timeframe,
                 category="sudden_spike",
                 severity="P1",
                 point_date=latest["point_date"],
@@ -500,7 +541,7 @@ def build_short_window_alerts(points: list[sqlite3.Row]) -> list[AlertDecision]:
     elif is_spike(recent_avg, baseline, multiplier=1.35, delta=6, floor=10):
         alerts.append(
             make_alert(
-                timeframe=SHORT_TIMEFRAME,
+                timeframe=timeframe,
                 category="warming_up",
                 severity="P2",
                 point_date=latest["point_date"],
@@ -513,7 +554,7 @@ def build_short_window_alerts(points: list[sqlite3.Row]) -> list[AlertDecision]:
     if is_drop(recent_avg, baseline, multiplier=0.45, delta=15, floor=15):
         alerts.append(
             make_alert(
-                timeframe=SHORT_TIMEFRAME,
+                timeframe=timeframe,
                 category="sudden_drop",
                 severity="P1",
                 point_date=latest["point_date"],
@@ -525,7 +566,7 @@ def build_short_window_alerts(points: list[sqlite3.Row]) -> list[AlertDecision]:
     elif is_drop(recent_avg, baseline, multiplier=0.70, delta=8, floor=12):
         alerts.append(
             make_alert(
-                timeframe=SHORT_TIMEFRAME,
+                timeframe=timeframe,
                 category="cooling_down",
                 severity="P2",
                 point_date=latest["point_date"],
@@ -538,7 +579,10 @@ def build_short_window_alerts(points: list[sqlite3.Row]) -> list[AlertDecision]:
     return alerts
 
 
-def build_mid_window_alerts(points: list[sqlite3.Row]) -> list[AlertDecision]:
+def build_mid_window_alerts(
+    points: list[sqlite3.Row],
+    timeframe: str,
+) -> list[AlertDecision]:
     if len(points) < 17:
         return []
 
@@ -553,19 +597,19 @@ def build_mid_window_alerts(points: list[sqlite3.Row]) -> list[AlertDecision]:
     if recent_avg >= 85 and recent_avg >= previous_peak * 0.95:
         alerts.append(
             make_alert(
-                timeframe=MID_TIMEFRAME,
-                category="three_month_breakout",
+                timeframe=timeframe,
+                category="window_breakout",
                 severity="P1",
                 point_date=latest["point_date"],
                 current_value=recent_avg,
                 baseline_value=max(float(previous_peak), 1.0),
-                message="中期热度接近 3 个月高位，可能从升温进入爆发确认。",
+                message="中期热度接近当前周期高位，可能从升温进入爆发确认。",
             )
         )
     elif is_spike(recent_avg, baseline, multiplier=1.30, delta=8, floor=15):
         alerts.append(
             make_alert(
-                timeframe=MID_TIMEFRAME,
+                timeframe=timeframe,
                 category="steady_rise",
                 severity="P2",
                 point_date=latest["point_date"],
@@ -578,7 +622,7 @@ def build_mid_window_alerts(points: list[sqlite3.Row]) -> list[AlertDecision]:
     if is_drop(recent_avg, baseline, multiplier=0.65, delta=10, floor=20):
         alerts.append(
             make_alert(
-                timeframe=MID_TIMEFRAME,
+                timeframe=timeframe,
                 category="steady_decline",
                 severity="P2",
                 point_date=latest["point_date"],
@@ -591,7 +635,10 @@ def build_mid_window_alerts(points: list[sqlite3.Row]) -> list[AlertDecision]:
     return alerts
 
 
-def build_long_window_alerts(points: list[sqlite3.Row]) -> list[AlertDecision]:
+def build_long_window_alerts(
+    points: list[sqlite3.Row],
+    timeframe: str,
+) -> list[AlertDecision]:
     if len(points) < 10:
         return []
 
@@ -606,19 +653,19 @@ def build_long_window_alerts(points: list[sqlite3.Row]) -> list[AlertDecision]:
     if latest_value >= 85:
         alerts.append(
             make_alert(
-                timeframe=LONG_TIMEFRAME,
+                timeframe=timeframe,
                 category="historical_hot",
                 severity="P1",
                 point_date=latest["point_date"],
                 current_value=latest_value,
                 baseline_value=baseline,
-                message="长期窗口已接近 12 个月高位，属于历史级热度。",
+                message="长期窗口已接近当前周期高位，属于历史级热度。",
             )
         )
     elif is_spike(recent_avg, baseline, multiplier=1.35, delta=8, floor=15):
         alerts.append(
             make_alert(
-                timeframe=LONG_TIMEFRAME,
+                timeframe=timeframe,
                 category="long_rise",
                 severity="P2",
                 point_date=latest["point_date"],
@@ -631,7 +678,7 @@ def build_long_window_alerts(points: list[sqlite3.Row]) -> list[AlertDecision]:
     if is_drop(recent_avg, baseline, multiplier=0.65, delta=10, floor=20):
         alerts.append(
             make_alert(
-                timeframe=LONG_TIMEFRAME,
+                timeframe=timeframe,
                 category="long_decline",
                 severity="P2",
                 point_date=latest["point_date"],
@@ -710,13 +757,14 @@ def format_alert_notification(
     public_base_url: str | None = DEFAULT_PUBLIC_BASE_URL,
 ) -> str:
     change = "N/A" if alert.change_pct is None else f"{alert.change_pct:+.1f}%"
+    point_date = format_beijing(alert.point_date, timeframe=alert.timeframe)
     lines = [
         "Google Trends 告警",
         f"级别: {alert.severity}",
         f"关键词: {term}",
         f"类型: {alert.category}",
         f"窗口: {alert.timeframe}",
-        f"触发点: {alert.point_date}",
+        f"触发点: {point_date}",
         f"当前: {alert.current_value:.1f}",
         f"基线: {alert.baseline_value:.1f}",
         f"变化: {change}",
@@ -727,6 +775,15 @@ def format_alert_notification(
     if keyword_url:
         lines.append(f"页面: {keyword_url}")
     return "\n".join(lines)
+
+
+def should_notify_alert(alert: AlertDecision) -> bool:
+    return alert.category not in {
+        "sudden_drop",
+        "cooling_down",
+        "steady_decline",
+        "long_decline",
+    }
 
 
 def build_keyword_url(
@@ -745,6 +802,7 @@ def build_keyword_url(
 def suggested_action(alert: AlertDecision) -> str:
     if alert.category in {
         "sudden_spike",
+        "window_breakout",
         "three_month_breakout",
         "historical_hot",
     }:

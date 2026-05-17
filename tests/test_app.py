@@ -33,6 +33,14 @@ class FakeProvider:
         return self.points
 
 
+class FailingProvider:
+    def __init__(self, error: str) -> None:
+        self.error = error
+
+    def collect_keyword(self, term: str, timeframe: str, geo: str) -> list[TrendPoint]:
+        raise RuntimeError(self.error)
+
+
 class FakeNotifier:
     def __init__(self) -> None:
         self.messages: list[str] = []
@@ -79,6 +87,24 @@ def test_keyword_can_be_added_and_listed(tmp_path) -> None:
         assert "启用" in response.text
 
 
+def test_keyword_remark_can_be_saved_and_displayed(tmp_path) -> None:
+    provider = FakeProvider()
+    with make_client(tmp_path, provider) as client:
+        client.post("/keywords", data={"term": "ChatGPT"})
+
+        response = client.post(
+            "/keywords/1/remark",
+            data={"remark": "重点观察国内外热度差异"},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"remark": "重点观察国内外热度差异"}
+
+        index = client.get("/")
+        assert index.status_code == 200
+        assert "重点观察国内外热度差异" in index.text
+        assert "remark-editor.js" in index.text
+
+
 def test_beijing_time_formatting() -> None:
     assert format_beijing("2026-05-17T03:00:00+00:00") == "2026-05-17 11:00:00"
     assert format_beijing("2026-05-17 03:00:00") == "2026-05-17 11:00:00"
@@ -94,18 +120,40 @@ def test_manual_collection_queues_job_and_saves_points(tmp_path) -> None:
         response = client.post("/collect/run-now", follow_redirects=True)
 
         assert response.status_code == 200
-        assert "Queued 3 collection jobs" in response.text
-        wait_until(lambda: len(provider.calls) == 3 and "成功" in client.get("/runs").text)
+        assert "Queued 2 collection jobs" in response.text
+        wait_until(lambda: len(provider.calls) == 2 and "成功" in client.get("/runs").text)
         assert provider.calls == [
             {"term": "ChatGPT", "timeframe": "now 7-d", "geo": ""},
             {"term": "ChatGPT", "timeframe": "today 3-m", "geo": ""},
-            {"term": "ChatGPT", "timeframe": "today 12-m", "geo": ""},
         ]
 
         detail = client.get("/keywords/1")
         assert detail.status_code == 200
         assert "2025-01-15" in detail.text
         assert ">30<" in detail.text
+
+
+def test_keyword_timeframes_can_be_changed_and_used_for_collection(tmp_path) -> None:
+    provider = FakeProvider()
+    with make_client(tmp_path, provider) as client:
+        client.post("/keywords", data={"term": "ChatGPT"})
+        response = client.post(
+            "/keywords/1/timeframes",
+            data={"timeframes": ["now 1-d", "today 12-m"]},
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        assert "now 1-d" in response.text
+        assert "today 12-m" in response.text
+
+        response = client.post("/collect/run-now", follow_redirects=True)
+        assert "Queued 2 collection jobs" in response.text
+        wait_until(lambda: len(provider.calls) == 2 and "成功" in client.get("/runs").text)
+        assert provider.calls == [
+            {"term": "ChatGPT", "timeframe": "now 1-d", "geo": ""},
+            {"term": "ChatGPT", "timeframe": "today 12-m", "geo": ""},
+        ]
 
 
 def test_failed_collection_records_job_error_and_notifies(tmp_path) -> None:
@@ -158,6 +206,38 @@ def test_failed_job_is_requeued_before_max_attempts(tmp_path) -> None:
         assert notifier.messages == []
 
 
+def test_google_rate_limit_uses_longer_retry_delay(tmp_path) -> None:
+    db_path = tmp_path / "test.sqlite3"
+    initialize_database(db_path)
+    provider = FailingProvider("The request failed: Google returned a response with code 429")
+    notifier = FakeNotifier()
+
+    with connect(db_path) as conn:
+        keyword = repository.create_keyword(conn, "ChatGPT")
+        job = collector.enqueue_keyword_job(
+            conn,
+            keyword_id=keyword["id"],
+            max_attempts=2,
+        )
+
+        results = collector.process_due_jobs(
+            conn,
+            provider,
+            notifier=notifier,
+            retry_delay_seconds=60,
+            request_delay_seconds=0,
+            max_jobs=1,
+        )
+        updated = repository.get_collection_job(conn, job["id"])
+
+        assert results[0]["status"] == "queued"
+        assert results[0]["retry_delay_seconds"] == 1800
+        assert updated["status"] == "queued"
+        assert updated["error"] == "Google Trends 限流 429：请求过于频繁，已自动延后重试。"
+        assert updated["next_attempt_at"] is not None
+        assert notifier.messages == []
+
+
 def test_alert_is_created_and_notified_for_recent_spike(tmp_path) -> None:
     start = date(2025, 1, 1)
     points: list[TrendPoint] = []
@@ -183,10 +263,68 @@ def test_alert_is_created_and_notified_for_recent_spike(tmp_path) -> None:
         assert any("关键词: AI" in message for message in notifier.messages)
         assert any("类型: warming_up" in message for message in notifier.messages)
         assert any("建议动作:" in message for message in notifier.messages)
+        assert all("触发点: 2025-" in message for message in notifier.messages)
         assert any(
             "页面: http://127.0.0.1:8000/keywords/1?timeframe=now%207-d" in message
             for message in notifier.messages
         )
+
+
+def test_decline_alert_is_recorded_but_not_notified(tmp_path) -> None:
+    db_path = tmp_path / "test.sqlite3"
+    initialize_database(db_path)
+    start = date(2025, 1, 1)
+    points: list[TrendPoint] = []
+    for index in range(30):
+        points.append(TrendPoint(date=start + timedelta(days=index * 7), value=50))
+    for index in range(3):
+        points.append(TrendPoint(date=start + timedelta(days=(30 + index) * 7), value=10))
+    provider = FakeProvider(points=points)
+    notifier = FakeNotifier()
+
+    with connect(db_path) as conn:
+        keyword = repository.create_keyword(conn, "AI")
+        collector.enqueue_keyword_job(
+            conn,
+            keyword_id=keyword["id"],
+            timeframe=SHORT_TIMEFRAME,
+        )
+        results = collector.process_due_jobs(
+            conn,
+            provider,
+            notifier=notifier,
+            request_delay_seconds=0,
+            max_jobs=1,
+            public_base_url="http://monitor.test",
+        )
+        alerts = repository.list_alerts(conn)
+
+    assert results[0]["alert_count"] == 1
+    assert alerts[0]["category"] == "sudden_drop"
+    assert notifier.messages == []
+
+
+def test_alert_notification_formats_point_date_as_beijing_time() -> None:
+    alert = collector.AlertDecision(
+        rule="trend_radar:now 7-d:warming_up",
+        severity="P2",
+        category="warming_up",
+        timeframe=SHORT_TIMEFRAME,
+        point_date="2026-05-17T03:00:00+00:00",
+        current_value=40,
+        baseline_value=20,
+        change_pct=100,
+        message="短线搜索热度小幅升温，建议观察是否持续放量。",
+    )
+
+    message = collector.format_alert_notification(
+        "AI",
+        alert,
+        keyword_id=1,
+        public_base_url="http://monitor.test",
+    )
+
+    assert "触发点: 2026-05-17 11:00:00" in message
 
 
 def test_alert_cooldown_suppresses_repeated_same_category(tmp_path) -> None:

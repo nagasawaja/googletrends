@@ -4,7 +4,7 @@
 <section class="page-head">
   <div>
     <h1>关键词监控</h1>
-    <p>全球范围，多周期监控：now 7-d 抓短线异动，today 3-m 确认趋势，today 12-m 判断历史热度。</p>
+    <p>全球范围，多周期监控：默认 now 7-d 抓短线异动，today 3-m 确认趋势；每个关键词可单独配置周期。</p>
   </div>
   <form method="post" action="/collect/run-now">
     <button class="button primary" type="submit">创建全部监控任务</button>
@@ -24,6 +24,8 @@
     <thead>
       <tr>
         <th>关键词</th>
+        <th>备注</th>
+        <th>监控周期</th>
         <th>状态</th>
         <th>趋势点</th>
         <th>最近成功</th>
@@ -38,6 +40,34 @@
       {% for keyword in keywords %}
         <tr>
           <td><a class="strong-link" href="/keywords/{{ keyword.id }}">{{ keyword.term }}</a></td>
+          <td
+            class="remark-cell"
+            data-save-url="/keywords/{{ keyword.id }}/remark"
+            data-remark="{{ keyword.remark }}"
+          >
+            <button class="remark-display" type="button">
+              {{ keyword.remark if keyword.remark else "点击添加备注" }}
+            </button>
+          </td>
+          <td class="timeframe-cell">
+            <form class="timeframe-form" method="post" action="/keywords/{{ keyword.id }}/timeframes">
+              {% set selected_timeframes = "," ~ keyword.timeframes ~ "," %}
+              <div class="timeframe-options">
+                {% for item in available_timeframes %}
+                  <label class="checkbox-option">
+                    <input
+                      type="checkbox"
+                      name="timeframes"
+                      value="{{ item }}"
+                      {% if "," ~ item ~ "," in selected_timeframes %}checked{% endif %}
+                    >
+                    <span>{{ item }}</span>
+                  </label>
+                {% endfor %}
+              </div>
+              <button class="button small" type="submit">保存周期</button>
+            </form>
+          </td>
           <td>
             {% if keyword.enabled %}
               <span class="pill ok">启用</span>
@@ -76,10 +106,13 @@
         </tr>
       {% else %}
         <tr>
-          <td colspan="9" class="empty">还没有关键词。</td>
+          <td colspan="11" class="empty">还没有关键词。</td>
         </tr>
       {% endfor %}
     </tbody>
   </table>
 </section>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', path='/remark-editor.js') }}"></script>
 {% endblock %}

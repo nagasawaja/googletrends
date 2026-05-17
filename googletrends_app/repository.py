@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 
+from .trends import DEFAULT_TIMEFRAMES_TEXT, parse_timeframes, serialize_timeframes
+
 
 def create_keyword(conn: sqlite3.Connection, term: str) -> sqlite3.Row:
     cleaned = term.strip()
@@ -11,10 +13,10 @@ def create_keyword(conn: sqlite3.Connection, term: str) -> sqlite3.Row:
 
     conn.execute(
         """
-        INSERT INTO keywords (term, enabled, updated_at)
-        VALUES (?, 1, CURRENT_TIMESTAMP)
+        INSERT INTO keywords (term, enabled, timeframes, updated_at)
+        VALUES (?, 1, ?, CURRENT_TIMESTAMP)
         """,
-        (cleaned,),
+        (cleaned, DEFAULT_TIMEFRAMES_TEXT),
     )
     conn.commit()
     return get_keyword_by_term(conn, cleaned)
@@ -99,6 +101,10 @@ def list_enabled_keywords(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return list(conn.execute("SELECT * FROM keywords WHERE enabled = 1 ORDER BY id"))
 
 
+def keyword_timeframes(keyword: sqlite3.Row) -> tuple[str, ...]:
+    return parse_timeframes(keyword["timeframes"] if "timeframes" in keyword.keys() else None)
+
+
 def set_keyword_enabled(
     conn: sqlite3.Connection, keyword_id: int, enabled: bool
 ) -> None:
@@ -111,6 +117,52 @@ def set_keyword_enabled(
         (1 if enabled else 0, keyword_id),
     )
     conn.commit()
+
+
+def update_keyword_remark(
+    conn: sqlite3.Connection,
+    keyword_id: int,
+    remark: str,
+) -> sqlite3.Row | None:
+    conn.execute(
+        """
+        UPDATE keywords
+        SET remark = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (remark.strip(), keyword_id),
+    )
+    conn.commit()
+    return get_keyword(conn, keyword_id)
+
+
+def update_keyword_timeframes(
+    conn: sqlite3.Connection,
+    keyword_id: int,
+    timeframes: Sequence[str],
+) -> sqlite3.Row | None:
+    selected = serialize_timeframes(tuple(timeframes))
+    conn.execute(
+        """
+        UPDATE keywords
+        SET timeframes = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (selected, keyword_id),
+    )
+    conn.execute(
+        """
+        DELETE FROM collection_jobs
+        WHERE keyword_id = ?
+          AND status = 'queued'
+          AND instr(',' || ? || ',', ',' || timeframe || ',') = 0
+        """,
+        (keyword_id, selected),
+    )
+    conn.commit()
+    return get_keyword(conn, keyword_id)
 
 
 def toggle_keyword(conn: sqlite3.Connection, keyword_id: int) -> None:
@@ -173,12 +225,16 @@ def create_collection_jobs_for_enabled(
     conn: sqlite3.Connection,
     source: str = "manual",
     max_attempts: int = 3,
-    timeframes: tuple[str, ...] = ("today 12-m",),
+    timeframes: tuple[str, ...] | None = None,
     geo: str = "",
 ) -> list[sqlite3.Row]:
     jobs: list[sqlite3.Row] = []
     for keyword in list_enabled_keywords(conn):
-        for timeframe in timeframes:
+        selected_timeframes = keyword_timeframes(keyword)
+        requested_timeframes = timeframes or selected_timeframes
+        for timeframe in requested_timeframes:
+            if timeframe not in selected_timeframes:
+                continue
             jobs.append(
                 create_collection_job(
                     conn,
@@ -218,6 +274,7 @@ def claim_next_collection_job(
         JOIN keywords k ON k.id = cj.keyword_id
         WHERE cj.status = 'queued'
           AND k.enabled = 1
+          AND instr(',' || k.timeframes || ',', ',' || cj.timeframe || ',') > 0
           AND (cj.next_attempt_at IS NULL OR cj.next_attempt_at <= ?)
         ORDER BY cj.created_at ASC, cj.id ASC
         LIMIT 1
@@ -240,6 +297,23 @@ def claim_next_collection_job(
     )
     conn.commit()
     return get_collection_job(conn, job["id"])
+
+
+def delete_unmonitored_queued_jobs(conn: sqlite3.Connection) -> int:
+    cursor = conn.execute(
+        """
+        DELETE FROM collection_jobs
+        WHERE status = 'queued'
+          AND EXISTS (
+              SELECT 1
+              FROM keywords k
+              WHERE k.id = collection_jobs.keyword_id
+                AND instr(',' || k.timeframes || ',', ',' || collection_jobs.timeframe || ',') = 0
+          )
+        """
+    )
+    conn.commit()
+    return cursor.rowcount
 
 
 def finish_collection_job_success(

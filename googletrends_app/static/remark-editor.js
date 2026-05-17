@@ -13,7 +13,7 @@
   }
 
   function renderEditor(cell) {
-    const alertId = cell.dataset.alertId;
+    const saveUrl = cell.dataset.saveUrl;
     const original = cell.dataset.remark || "";
     cell.innerHTML = "";
 
@@ -52,7 +52,7 @@
       const body = new URLSearchParams();
       body.set("remark", textarea.value);
       try {
-        const response = await fetch(`/alerts/${alertId}/remark`, {
+        const response = await fetch(saveUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",

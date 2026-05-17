@@ -8,9 +8,40 @@ from typing import Protocol
 SHORT_TIMEFRAME = "now 7-d"
 MID_TIMEFRAME = "today 3-m"
 LONG_TIMEFRAME = "today 12-m"
-MONITORED_TIMEFRAMES = (SHORT_TIMEFRAME, MID_TIMEFRAME, LONG_TIMEFRAME)
-DEFAULT_TIMEFRAME = LONG_TIMEFRAME
+AVAILABLE_TIMEFRAMES = (
+    "now 1-d",
+    SHORT_TIMEFRAME,
+    "today 1-m",
+    MID_TIMEFRAME,
+    LONG_TIMEFRAME,
+    "today 5-y",
+)
+NOW_TIMEFRAMES = ("now 1-d", SHORT_TIMEFRAME)
+MID_TIMEFRAMES = ("today 1-m", MID_TIMEFRAME)
+LONG_TIMEFRAMES = (LONG_TIMEFRAME, "today 5-y")
+CONTEXT_TIMEFRAMES = MID_TIMEFRAMES + LONG_TIMEFRAMES
+MONITORED_TIMEFRAMES = (SHORT_TIMEFRAME, MID_TIMEFRAME)
+DEFAULT_TIMEFRAME = SHORT_TIMEFRAME
 DEFAULT_GEO = ""
+DEFAULT_TIMEFRAMES_TEXT = ",".join(MONITORED_TIMEFRAMES)
+
+
+def parse_timeframes(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return MONITORED_TIMEFRAMES
+    selected: list[str] = []
+    for item in value.split(","):
+        timeframe = item.strip()
+        if timeframe in AVAILABLE_TIMEFRAMES and timeframe not in selected:
+            selected.append(timeframe)
+    return tuple(selected) or MONITORED_TIMEFRAMES
+
+
+def serialize_timeframes(timeframes: list[str] | tuple[str, ...]) -> str:
+    selected = [item for item in timeframes if item in AVAILABLE_TIMEFRAMES]
+    if not selected:
+        selected = list(MONITORED_TIMEFRAMES)
+    return ",".join(dict.fromkeys(selected))
 
 
 @dataclass(frozen=True)
@@ -68,7 +99,7 @@ class PytrendsProvider:
             partial_value = bool(row.get("isPartial", False))
             timestamp = index.to_pydatetime()
             if (
-                timeframe != SHORT_TIMEFRAME
+                timeframe not in NOW_TIMEFRAMES
                 and timestamp.hour == 0
                 and timestamp.minute == 0
                 and timestamp.second == 0

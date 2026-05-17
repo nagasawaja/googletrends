@@ -5,7 +5,7 @@ Low-cost MVP for monitoring fixed Google Trends keywords worldwide.
 ## Features
 
 - Add, pause, resume, and delete fixed keywords.
-- Collect worldwide Google Trends data across `now 7-d`, `today 3-m`, and `today 12-m`.
+- Collect worldwide Google Trends data across editable per-keyword timeframes.
 - Run collection manually from the web UI.
 - Schedule hourly short-window job creation and daily context-window job creation.
 - Process queued jobs in a background worker with retry and request spacing.
@@ -59,13 +59,14 @@ docker compose down
 
 ## Alert Model
 
-The radar uses three windows:
+The radar supports editable keyword-level windows:
 
-- `now 7-d`: detects sudden spikes, small warm-ups, and short-term drops.
-- `today 3-m`: confirms medium-term breakouts, steady rises, and steady declines.
-- `today 12-m`: checks whether a keyword is near a 12-month high or has meaningful long-term movement.
+- Default monitored windows: `now 7-d`, `today 3-m`.
+- Available windows: `now 1-d`, `now 7-d`, `today 1-m`, `today 3-m`, `today 12-m`, `today 5-y`.
+- Short windows detect sudden spikes, small warm-ups, and short-term drops.
+- Mid/long windows confirm breakouts, steady rises, and declines.
 
-Alerts are stored with severity, category, timeframe, current value, baseline value, and percent change. New alerts are sent to Feishu. The same keyword, severity, category, and timeframe are cooled down before another notification is created.
+Alerts are stored with severity, category, timeframe, current value, baseline value, and percent change. Upward and breakout alerts are sent to Feishu; decline and cooling alerts stay in the UI/history without Feishu notifications. The same keyword, severity, category, and timeframe are cooled down before another notification is created.
 
 中文运行流程说明见 [`docs/runtime_flow_zh.md`](docs/runtime_flow_zh.md)。
 

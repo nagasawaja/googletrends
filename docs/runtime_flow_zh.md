@@ -1,6 +1,6 @@
 # Google Trends Monitor 程序运行流程说明
 
-本文档说明当前 MVP 的运行链路：关键词从哪里配置，数据从哪里采集，采集后如何入库、分析、去重，最后如何发送飞书通知。
+本文档说明当前 MVP 的运行链路：关键词从哪里配置，数据从哪里采集，采集后如何入库、分析、去重，最后如何按告警类型决定是否发送飞书通知。
 
 ## 1. 整体流程
 
@@ -13,7 +13,7 @@ flowchart TD
     E --> F["按周期执行告警规则"]
     F --> G["冷却/去重判断"]
     G --> H["写入 alerts"]
-    H --> I["发送飞书机器人文本通知"]
+    H --> I["符合通知条件时发送飞书机器人文本通知"]
     E --> J["网页查看趋势图、采集记录、告警、历史回测"]
 ```
 
@@ -50,19 +50,27 @@ flowchart TD
 
 当前定时策略：
 
-- 每小时第 5 分钟：创建 `now 7-d` 短周期采集任务
-- 每天北京时间 02:00：创建 `today 3-m` 和 `today 12-m` 上下文采集任务
+- 每小时第 5 分钟：为启用了短周期的关键词创建 `now 1-d` / `now 7-d` 采集任务
+- 每天北京时间 02:00：为启用了中长期周期的关键词创建 `today 1-m` / `today 3-m` / `today 12-m` / `today 5-y` 采集任务
 - 每 1 分钟：启动一次后台 Worker，处理排队中的采集任务
 
 对应逻辑在 `googletrends_app/main.py` 的 `create_app()` 里。
 
 ### 3.2 手动采集
 
-网页上点击“立即采集”后，会为启用关键词创建三类任务：
+网页上点击“立即采集”后，会按每个关键词自己配置的周期创建任务。默认新关键词只启用：
 
 - `now 7-d`
 - `today 3-m`
+
+可选周期包括：
+
+- `now 1-d`
+- `now 7-d`
+- `today 1-m`
+- `today 3-m`
 - `today 12-m`
+- `today 5-y`
 
 任务保存到 `collection_jobs` 表。系统会避免同一个关键词、同一个周期、同一个地区在已有 `queued` 或 `running` 任务时重复创建任务。
 
@@ -82,7 +90,7 @@ data = pytrends.interest_over_time()
 
 - `term`：人工配置的关键词
 - `geo=""`：全球范围
-- `timeframe`：采集窗口，目前是 `now 7-d`、`today 3-m`、`today 12-m`
+- `timeframe`：采集窗口，例如 `now 7-d`、`today 3-m`，也可以按关键词启用其他可选周期
 - `tz=480`：北京时间 UTC+8
 - `interest_over_time()`：获取 Google Trends 的时间序列热度数据
 
@@ -130,16 +138,16 @@ evaluate_alerts(conn, keyword_id, timeframe=job_timeframe)
 
 系统按采集窗口选择不同规则：
 
-- `now 7-d`：短线雷达，关注突然暴增、小幅升温、快速下跌、明显回落
-- `today 3-m`：中期确认，关注 3 个月高位、连续走强、连续回落
-- `today 12-m`：长期参照，关注 12 个月高位、长期上行、长期下行
+- `now 1-d` / `now 7-d`：短线雷达，关注突然暴增、小幅升温、快速下跌、明显回落
+- `today 1-m` / `today 3-m`：中期确认，关注周期高位、连续走强、连续回落
+- `today 12-m` / `today 5-y`：长期参照，关注当前周期高位、长期上行、长期下行
 
 ### 6.2 partial 数据处理
 
-- `now 7-d`：保留 partial 点，因为短线监控需要尽早发现变化
-- `today 3-m` 和 `today 12-m`：过滤 partial 点，避免未完整周期造成误判
+- `now 1-d` / `now 7-d`：保留 partial 点，因为短线监控需要尽早发现变化
+- `today ...` 系列：过滤 partial 点，避免未完整周期造成误判
 
-### 6.3 短周期 `now 7-d` 规则
+### 6.3 短周期 `now 1-d` / `now 7-d` 规则
 
 短周期至少需要 12 个点。
 
@@ -156,7 +164,7 @@ evaluate_alerts(conn, keyword_id, timeframe=job_timeframe)
 - `sudden_drop`，P1：短线搜索热度快速下跌，可能出现热度暴毙
 - `cooling_down`，P2：短线搜索热度明显回落，建议确认是否失去动能
 
-### 6.4 中周期 `today 3-m` 规则
+### 6.4 中周期 `today 1-m` / `today 3-m` 规则
 
 中周期至少需要 17 个点。
 
@@ -168,11 +176,11 @@ evaluate_alerts(conn, keyword_id, timeframe=job_timeframe)
 
 当前规则：
 
-- `three_month_breakout`，P1：接近 3 个月高位
+- `window_breakout`，P1：接近当前周期高位
 - `steady_rise`，P2：中期连续走强
 - `steady_decline`，P2：中期连续回落
 
-### 6.5 长周期 `today 12-m` 规则
+### 6.5 长周期 `today 12-m` / `today 5-y` 规则
 
 长周期至少需要 10 个点。
 
@@ -259,13 +267,20 @@ GOOGLETRENDS_P2_ALERT_COOLDOWN_HOURS=24
 
 如果没有配置 `FEISHU_WEBHOOK_URL`，系统使用 `NullNotifier`，不会真正发送通知。
 
+并不是所有入库告警都会发送飞书。当前策略是：
+
+- 发送飞书：`sudden_spike`、`warming_up`、`window_breakout`、`steady_rise`、`historical_hot`、`long_rise`
+- 不发送飞书，只入库并在页面/回测里展示：`sudden_drop`、`cooling_down`、`steady_decline`、`long_decline`
+
+这样可以保留“热度回落/暴毙”的历史判断能力，同时避免飞书被回落类消息刷屏。
+
 告警消息由 `collector.format_alert_notification()` 生成，包含：
 
 - 告警级别
 - 关键词
 - 告警类型
 - 采集窗口
-- 触发时间点
+- 触发时间点，北京时间，格式 `YYYY-MM-DD HH:MM:SS`
 - 当前值
 - 基线值
 - 变化百分比
@@ -362,4 +377,3 @@ GOOGLETRENDS_REQUEST_DELAY_SECONDS=2
 - 用户权限和登录
 - 告警确认、处理状态、负责人流转
 - 多 webhook、多渠道通知
-

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from . import collector, repository
-from .trends import DEFAULT_TIMEFRAME, LONG_TIMEFRAME, MID_TIMEFRAME, SHORT_TIMEFRAME
+from .trends import DEFAULT_TIMEFRAME, LONG_TIMEFRAMES, MID_TIMEFRAMES, NOW_TIMEFRAMES
 
 
 @dataclass(frozen=True)
@@ -118,11 +118,11 @@ def simulate_events(
 
 
 def minimum_points_for_timeframe(timeframe: str) -> int:
-    if timeframe == SHORT_TIMEFRAME:
+    if timeframe in NOW_TIMEFRAMES:
         return 12
-    if timeframe == MID_TIMEFRAME:
+    if timeframe in MID_TIMEFRAMES:
         return 17
-    if timeframe == LONG_TIMEFRAME:
+    if timeframe in LONG_TIMEFRAMES:
         return 10
     return 1
 

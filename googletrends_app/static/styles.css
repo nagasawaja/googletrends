@@ -427,6 +427,44 @@ tr:last-child td {
   gap: 8px;
 }
 
+.timeframe-cell {
+  min-width: 260px;
+  vertical-align: top;
+}
+
+.timeframe-form {
+  display: grid;
+  gap: 8px;
+}
+
+.timeframe-options {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.checkbox-option {
+  align-items: center;
+  color: var(--text);
+  display: flex;
+  font-size: 12px;
+  font-weight: 650;
+  gap: 6px;
+  line-height: 1.25;
+  min-width: 0;
+}
+
+.checkbox-option input {
+  flex: 0 0 auto;
+  min-height: 0;
+  padding: 0;
+  width: auto;
+}
+
+.checkbox-option span {
+  overflow-wrap: anywhere;
+}
+
 .filters {
   display: flex;
   flex-wrap: wrap;

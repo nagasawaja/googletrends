@@ -18,10 +18,11 @@ from .notifier import Notifier, build_notifier
 from .settings import load_settings
 from .time_utils import format_beijing
 from .trends import (
+    AVAILABLE_TIMEFRAMES,
+    CONTEXT_TIMEFRAMES,
     DEFAULT_GEO,
-    LONG_TIMEFRAME,
-    MID_TIMEFRAME,
     MONITORED_TIMEFRAMES,
+    NOW_TIMEFRAMES,
     PytrendsProvider,
     SHORT_TIMEFRAME,
     TrendsProvider,
@@ -75,6 +76,8 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         initialize_database(app_instance.state.db_path)
+        with connect(app_instance.state.db_path) as conn:
+            repository.delete_unmonitored_queued_jobs(conn)
         if scheduler_enabled:
             scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
             scheduler.add_job(
@@ -87,7 +90,7 @@ def create_app(
                     "db_path": app_instance.state.db_path,
                     "source": "scheduled_short",
                     "max_attempts": app_instance.state.max_attempts,
-                    "timeframes": (SHORT_TIMEFRAME,),
+                    "timeframes": NOW_TIMEFRAMES,
                 },
             )
             scheduler.add_job(
@@ -101,7 +104,7 @@ def create_app(
                     "db_path": app_instance.state.db_path,
                     "source": "scheduled_context",
                     "max_attempts": app_instance.state.max_attempts,
-                    "timeframes": (MID_TIMEFRAME, LONG_TIMEFRAME),
+                    "timeframes": CONTEXT_TIMEFRAMES,
                 },
             )
             scheduler.add_job(
@@ -133,6 +136,7 @@ def create_app(
     app.state.retry_delay_seconds = resolved_retry_delay
     app.state.max_attempts = resolved_max_attempts
     app.state.monitored_timeframes = MONITORED_TIMEFRAMES
+    app.state.available_timeframes = AVAILABLE_TIMEFRAMES
     app.state.public_base_url = resolved_public_base_url
     app.state.p1_alert_cooldown_hours = resolved_p1_cooldown
     app.state.p2_alert_cooldown_hours = resolved_p2_cooldown
@@ -167,6 +171,7 @@ def index(
         context={
             "request": request,
             "keywords": repository.list_keywords(conn),
+            "available_timeframes": AVAILABLE_TIMEFRAMES,
             "error": error,
             "message": message,
         },
@@ -197,6 +202,37 @@ def toggle_keyword(
     return redirect("/", message="Keyword updated.")
 
 
+@router.post("/keywords/{keyword_id}/remark")
+def update_keyword_remark(
+    keyword_id: int,
+    remark: str = Form(""),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> dict[str, str]:
+    updated = repository.update_keyword_remark(conn, keyword_id, remark)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Keyword not found.")
+    return {"remark": updated["remark"]}
+
+
+@router.post("/keywords/{keyword_id}/timeframes")
+async def update_keyword_timeframes(
+    keyword_id: int,
+    request: Request,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    ensure_keyword(conn, keyword_id)
+    form = await request.form()
+    selected = [
+        value
+        for value in form.getlist("timeframes")
+        if isinstance(value, str) and value in AVAILABLE_TIMEFRAMES
+    ]
+    if not selected:
+        return redirect("/", error="At least one timeframe must be selected.")
+    repository.update_keyword_timeframes(conn, keyword_id, selected)
+    return redirect("/", message="Keyword timeframes updated.")
+
+
 @router.post("/keywords/{keyword_id}/delete")
 def delete_keyword(
     keyword_id: int,
@@ -215,7 +251,7 @@ def keyword_detail(
     timeframe: str = SHORT_TIMEFRAME,
 ) -> HTMLResponse:
     keyword = ensure_keyword(conn, keyword_id)
-    if timeframe not in MONITORED_TIMEFRAMES:
+    if timeframe not in AVAILABLE_TIMEFRAMES:
         timeframe = SHORT_TIMEFRAME
     points = repository.list_trend_points(conn, keyword_id, timeframe=timeframe)
     chart = build_chart(points)
@@ -232,7 +268,7 @@ def keyword_detail(
             "chart": chart,
             "runs": runs,
             "timeframe": timeframe,
-            "timeframes": MONITORED_TIMEFRAMES,
+            "timeframes": AVAILABLE_TIMEFRAMES,
         },
     )
 
@@ -249,7 +285,6 @@ def collect_one(
         keyword_id=keyword_id,
         source="manual",
         max_attempts=request.app.state.max_attempts,
-        timeframes=request.app.state.monitored_timeframes,
     )
     worker.start_worker(request.app)
     return redirect(
@@ -267,7 +302,6 @@ def collect_now(
         conn,
         source="manual",
         max_attempts=request.app.state.max_attempts,
-        timeframes=request.app.state.monitored_timeframes,
     )
     started = worker.start_worker(request.app)
     worker_status = "worker started" if started else "worker already running"
@@ -331,7 +365,7 @@ def backtest_page(
     timeframe: str = SHORT_TIMEFRAME,
 ) -> HTMLResponse:
     keywords = repository.list_keywords(conn)
-    if timeframe not in MONITORED_TIMEFRAMES:
+    if timeframe not in AVAILABLE_TIMEFRAMES:
         timeframe = SHORT_TIMEFRAME
 
     selected_keyword_id = keyword_id
@@ -361,7 +395,7 @@ def backtest_page(
             "result": result,
             "selected_keyword_id": selected_keyword_id,
             "timeframe": timeframe,
-            "timeframes": MONITORED_TIMEFRAMES,
+            "timeframes": AVAILABLE_TIMEFRAMES,
         },
     )
 
