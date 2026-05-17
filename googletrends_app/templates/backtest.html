@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}历史回测 - Google Trends Monitor{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1>历史回测</h1>
+    <p>用已采集历史曲线按时间顺序模拟告警触发，检查规则是否能提前发现升温或衰退。</p>
+  </div>
+</section>
+
+<section class="panel">
+  <form class="inline-form backtest-form" method="get" action="/backtest">
+    <label>
+      关键词
+      <select name="keyword_id">
+        {% for keyword in keywords %}
+          <option value="{{ keyword.id }}" {% if keyword.id == selected_keyword_id %}selected{% endif %}>
+            {{ keyword.term }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      周期
+      <select name="timeframe">
+        {% for item in timeframes %}
+          <option value="{{ item }}" {% if item == timeframe %}selected{% endif %}>{{ item }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="button primary" type="submit">运行回测</button>
+  </form>
+</section>
+
+{% if result %}
+  <section class="panel">
+    <div class="summary-grid">
+      <div>
+        <span class="summary-label">关键词</span>
+        <strong>{{ result.keyword.term }}</strong>
+      </div>
+      <div>
+        <span class="summary-label">周期</span>
+        <strong>{{ result.timeframe }}</strong>
+      </div>
+      <div>
+        <span class="summary-label">历史点数</span>
+        <strong>{{ result.points_count }}</strong>
+      </div>
+      <div>
+        <span class="summary-label">模拟触发</span>
+        <strong>{{ result.events|length }}</strong>
+      </div>
+    </div>
+    {% if result.category_counts %}
+      <div class="filters compact">
+        {% for category, count in result.category_counts.items() %}
+          <span class="pill muted">{{ category }}: {{ count }}</span>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>触发时间</th>
+          <th>级别</th>
+          <th>类型</th>
+          <th>当前</th>
+          <th>基线</th>
+          <th>变化</th>
+          <th>已观察点数</th>
+          <th>规则</th>
+          <th>说明</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for event in result.events %}
+          <tr>
+            <td>{{ event.point_date|bjtime(result.timeframe) }}</td>
+            <td>
+              {% if event.severity == "P1" %}
+                <span class="pill bad">{{ event.severity }}</span>
+              {% else %}
+                <span class="pill warn">{{ event.severity }}</span>
+              {% endif %}
+            </td>
+            <td>{{ event.category }}</td>
+            <td>{{ "%.1f"|format(event.current_value) }}</td>
+            <td>{{ "%.1f"|format(event.baseline_value) }}</td>
+            <td>{{ "%+.1f%%"|format(event.change_pct) if event.change_pct is not none else "N/A" }}</td>
+            <td>{{ event.observed_points }}</td>
+            <td>{{ event.rule }}</td>
+            <td>{{ event.message }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="9" class="empty">当前历史数据没有模拟触发任何告警。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% else %}
+  <section class="panel">
+    <p class="empty">暂无关键词，先添加关键词并完成采集后再回测。</p>
+  </section>
+{% endif %}
+{% endblock %}

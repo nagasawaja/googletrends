@@ -1,0 +1,424 @@
+from __future__ import annotations
+
+import sqlite3
+import threading
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+from . import backtest, collector, repository, worker
+from .database import connect, initialize_database
+from .notifier import Notifier, build_notifier
+from .settings import load_settings
+from .time_utils import format_beijing
+from .trends import (
+    DEFAULT_GEO,
+    LONG_TIMEFRAME,
+    MID_TIMEFRAME,
+    MONITORED_TIMEFRAMES,
+    PytrendsProvider,
+    SHORT_TIMEFRAME,
+    TrendsProvider,
+)
+
+APP_DIR = Path(__file__).parent
+templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
+templates.env.filters["bjtime"] = format_beijing
+router = APIRouter()
+
+
+def create_app(
+    db_path: str | Path | None = None,
+    trends_provider: TrendsProvider | None = None,
+    notifier: Notifier | None = None,
+    start_scheduler: bool | None = None,
+    request_delay_seconds: float | None = None,
+    retry_delay_seconds: int | None = None,
+    max_attempts: int | None = None,
+    public_base_url: str | None = None,
+    p1_alert_cooldown_hours: int | None = None,
+    p2_alert_cooldown_hours: int | None = None,
+) -> FastAPI:
+    settings = load_settings()
+    resolved_db_path = Path(db_path) if db_path is not None else settings.db_path
+    scheduler_enabled = settings.scheduler_enabled if start_scheduler is None else start_scheduler
+    resolved_notifier = notifier or build_notifier(settings.feishu_webhook_url)
+    resolved_request_delay = (
+        settings.request_delay_seconds
+        if request_delay_seconds is None
+        else request_delay_seconds
+    )
+    resolved_retry_delay = (
+        settings.retry_delay_seconds if retry_delay_seconds is None else retry_delay_seconds
+    )
+    resolved_max_attempts = settings.max_attempts if max_attempts is None else max_attempts
+    resolved_public_base_url = (
+        settings.public_base_url if public_base_url is None else public_base_url
+    )
+    resolved_p1_cooldown = (
+        settings.p1_alert_cooldown_hours
+        if p1_alert_cooldown_hours is None
+        else p1_alert_cooldown_hours
+    )
+    resolved_p2_cooldown = (
+        settings.p2_alert_cooldown_hours
+        if p2_alert_cooldown_hours is None
+        else p2_alert_cooldown_hours
+    )
+
+    @asynccontextmanager
+    async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
+        initialize_database(app_instance.state.db_path)
+        if scheduler_enabled:
+            scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
+            scheduler.add_job(
+                collector.enqueue_enabled_jobs_for_path,
+                trigger="cron",
+                minute=5,
+                id="hourly_short_trends_collection",
+                replace_existing=True,
+                kwargs={
+                    "db_path": app_instance.state.db_path,
+                    "source": "scheduled_short",
+                    "max_attempts": app_instance.state.max_attempts,
+                    "timeframes": (SHORT_TIMEFRAME,),
+                },
+            )
+            scheduler.add_job(
+                collector.enqueue_enabled_jobs_for_path,
+                trigger="cron",
+                hour=2,
+                minute=0,
+                id="daily_context_trends_collection",
+                replace_existing=True,
+                kwargs={
+                    "db_path": app_instance.state.db_path,
+                    "source": "scheduled_context",
+                    "max_attempts": app_instance.state.max_attempts,
+                    "timeframes": (MID_TIMEFRAME, LONG_TIMEFRAME),
+                },
+            )
+            scheduler.add_job(
+                worker.start_worker,
+                trigger="interval",
+                minutes=1,
+                id="collection_worker",
+                replace_existing=True,
+                kwargs={"app": app_instance},
+            )
+            scheduler.start()
+            app_instance.state.scheduler = scheduler
+
+        try:
+            yield
+        finally:
+            scheduler = app_instance.state.scheduler
+            if scheduler is not None:
+                scheduler.shutdown(wait=False)
+
+    app = FastAPI(title="Google Trends Monitor MVP", lifespan=lifespan)
+    app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
+    app.state.db_path = resolved_db_path
+    app.state.trends_provider = trends_provider or PytrendsProvider()
+    app.state.notifier = resolved_notifier
+    app.state.scheduler = None
+    app.state.worker_lock = threading.Lock()
+    app.state.request_delay_seconds = resolved_request_delay
+    app.state.retry_delay_seconds = resolved_retry_delay
+    app.state.max_attempts = resolved_max_attempts
+    app.state.monitored_timeframes = MONITORED_TIMEFRAMES
+    app.state.public_base_url = resolved_public_base_url
+    app.state.p1_alert_cooldown_hours = resolved_p1_cooldown
+    app.state.p2_alert_cooldown_hours = resolved_p2_cooldown
+
+    app.include_router(router)
+    return app
+
+
+def get_db(request: Request) -> Iterator[sqlite3.Connection]:
+    conn = connect(request.app.state.db_path)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@router.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@router.get("/", response_class=HTMLResponse)
+def index(
+    request: Request,
+    conn: sqlite3.Connection = Depends(get_db),
+    error: str | None = None,
+    message: str | None = None,
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={
+            "request": request,
+            "keywords": repository.list_keywords(conn),
+            "error": error,
+            "message": message,
+        },
+    )
+
+
+@router.post("/keywords")
+def add_keyword(
+    term: str = Form(...),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    try:
+        repository.create_keyword(conn, term)
+    except ValueError as exc:
+        return redirect("/", error=str(exc))
+    except sqlite3.IntegrityError:
+        return redirect("/", error="Keyword already exists.")
+    return redirect("/", message="Keyword added.")
+
+
+@router.post("/keywords/{keyword_id}/toggle")
+def toggle_keyword(
+    keyword_id: int,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    ensure_keyword(conn, keyword_id)
+    repository.toggle_keyword(conn, keyword_id)
+    return redirect("/", message="Keyword updated.")
+
+
+@router.post("/keywords/{keyword_id}/delete")
+def delete_keyword(
+    keyword_id: int,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    ensure_keyword(conn, keyword_id)
+    repository.delete_keyword(conn, keyword_id)
+    return redirect("/", message="Keyword deleted.")
+
+
+@router.get("/keywords/{keyword_id}", response_class=HTMLResponse)
+def keyword_detail(
+    keyword_id: int,
+    request: Request,
+    conn: sqlite3.Connection = Depends(get_db),
+    timeframe: str = SHORT_TIMEFRAME,
+) -> HTMLResponse:
+    keyword = ensure_keyword(conn, keyword_id)
+    if timeframe not in MONITORED_TIMEFRAMES:
+        timeframe = SHORT_TIMEFRAME
+    points = repository.list_trend_points(conn, keyword_id, timeframe=timeframe)
+    chart = build_chart(points)
+    runs = [
+        run for run in repository.list_jobs(conn, limit=25) if run["keyword_id"] == keyword_id
+    ][:10]
+    return templates.TemplateResponse(
+        request=request,
+        name="keyword_detail.html",
+        context={
+            "request": request,
+            "keyword": keyword,
+            "points": points,
+            "chart": chart,
+            "runs": runs,
+            "timeframe": timeframe,
+            "timeframes": MONITORED_TIMEFRAMES,
+        },
+    )
+
+
+@router.post("/keywords/{keyword_id}/collect")
+def collect_one(
+    keyword_id: int,
+    request: Request,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    ensure_keyword(conn, keyword_id)
+    jobs = collector.enqueue_keyword_jobs(
+        conn,
+        keyword_id=keyword_id,
+        source="manual",
+        max_attempts=request.app.state.max_attempts,
+        timeframes=request.app.state.monitored_timeframes,
+    )
+    worker.start_worker(request.app)
+    return redirect(
+        f"/keywords/{keyword_id}",
+        message=f"Queued {len(jobs)} collection jobs.",
+    )
+
+
+@router.post("/collect/run-now")
+def collect_now(
+    request: Request,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    jobs = collector.enqueue_enabled_jobs(
+        conn,
+        source="manual",
+        max_attempts=request.app.state.max_attempts,
+        timeframes=request.app.state.monitored_timeframes,
+    )
+    started = worker.start_worker(request.app)
+    worker_status = "worker started" if started else "worker already running"
+    return redirect(
+        "/runs",
+        message=f"Queued {len(jobs)} collection jobs; {worker_status}.",
+    )
+
+
+@router.get("/runs", response_class=HTMLResponse)
+def runs(
+    request: Request,
+    conn: sqlite3.Connection = Depends(get_db),
+    message: str | None = None,
+    status: str | None = None,
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="runs.html",
+        context={
+            "request": request,
+            "runs": repository.list_jobs(conn, status=status),
+            "message": message,
+            "status": status,
+        },
+    )
+
+
+@router.get("/alerts", response_class=HTMLResponse)
+def alerts(
+    request: Request,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="alerts.html",
+        context={
+            "request": request,
+            "alerts": repository.list_alerts(conn),
+        },
+    )
+
+
+@router.get("/backtest", response_class=HTMLResponse)
+def backtest_page(
+    request: Request,
+    conn: sqlite3.Connection = Depends(get_db),
+    keyword_id: int | None = None,
+    timeframe: str = SHORT_TIMEFRAME,
+) -> HTMLResponse:
+    keywords = repository.list_keywords(conn)
+    if timeframe not in MONITORED_TIMEFRAMES:
+        timeframe = SHORT_TIMEFRAME
+
+    selected_keyword_id = keyword_id
+    if selected_keyword_id is None and keywords:
+        selected_keyword_id = keywords[0]["id"]
+    elif selected_keyword_id is not None and not any(
+        keyword["id"] == selected_keyword_id for keyword in keywords
+    ):
+        raise HTTPException(status_code=404, detail="Keyword not found.")
+
+    result = None
+    if selected_keyword_id is not None:
+        result = backtest.run_keyword_backtest(
+            conn,
+            keyword_id=selected_keyword_id,
+            timeframe=timeframe,
+            p1_alert_cooldown_hours=request.app.state.p1_alert_cooldown_hours,
+            p2_alert_cooldown_hours=request.app.state.p2_alert_cooldown_hours,
+        )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="backtest.html",
+        context={
+            "request": request,
+            "keywords": keywords,
+            "result": result,
+            "selected_keyword_id": selected_keyword_id,
+            "timeframe": timeframe,
+            "timeframes": MONITORED_TIMEFRAMES,
+        },
+    )
+
+
+def ensure_keyword(conn: sqlite3.Connection, keyword_id: int) -> sqlite3.Row:
+    keyword = repository.get_keyword(conn, keyword_id)
+    if keyword is None:
+        raise HTTPException(status_code=404, detail="Keyword not found.")
+    return keyword
+
+
+def redirect(path: str, message: str | None = None, error: str | None = None) -> RedirectResponse:
+    params = []
+    if message:
+        params.append(("message", message))
+    if error:
+        params.append(("error", error))
+    if params:
+        from urllib.parse import urlencode
+
+        path = f"{path}?{urlencode(params)}"
+    return RedirectResponse(path, status_code=303)
+
+
+def build_chart(points: list[sqlite3.Row]) -> dict[str, object]:
+    width = 900
+    height = 280
+    padding_x = 32
+    padding_y = 20
+    if not points:
+        return {
+            "width": width,
+            "height": height,
+            "path": "",
+            "points": [],
+            "point_radius": 2.6,
+        }
+
+    usable_width = width - (padding_x * 2)
+    usable_height = height - (padding_y * 2)
+    max_index = max(len(points) - 1, 1)
+    coords: list[dict[str, object]] = []
+    for index, point in enumerate(points):
+        value = int(point["value"])
+        x = padding_x + (usable_width * index / max_index)
+        y = padding_y + usable_height - (usable_height * value / 100)
+        coords.append(
+            {
+                "x": round(x, 2),
+                "y": round(y, 2),
+                "value": value,
+                "date": point["point_date"],
+                "display_date": format_beijing(
+                    point["point_date"], timeframe=point["timeframe"]
+                ),
+            }
+        )
+    path = " ".join(
+        f"{'M' if index == 0 else 'L'} {coord['x']} {coord['y']}"
+        for index, coord in enumerate(coords)
+    )
+    point_radius = 2.4 if len(points) > 120 else 3.2
+    return {
+        "width": width,
+        "height": height,
+        "path": path,
+        "points": coords,
+        "point_radius": point_radius,
+    }
+
+
+app = create_app()

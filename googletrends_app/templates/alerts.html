@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}告警 - Google Trends Monitor{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1>告警</h1>
+    <p>多周期雷达告警：短线暴增/小增/回落，中期突破/衰退，长期历史高位。</p>
+  </div>
+</section>
+
+<section class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>关键词</th>
+        <th>级别</th>
+        <th>类型</th>
+        <th>周期</th>
+        <th>触发日期</th>
+        <th>当前</th>
+        <th>基线</th>
+        <th>变化</th>
+        <th>规则</th>
+        <th>消息</th>
+        <th>创建时间</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for alert in alerts %}
+        <tr>
+          <td><a class="strong-link" href="/keywords/{{ alert.keyword_id }}">{{ alert.term }}</a></td>
+          <td>
+            {% if alert.severity == "P1" %}
+              <span class="pill bad">{{ alert.severity }}</span>
+            {% else %}
+              <span class="pill warn">{{ alert.severity }}</span>
+            {% endif %}
+          </td>
+          <td>{{ alert.category }}</td>
+          <td>{{ alert.timeframe }}</td>
+          <td>{{ alert.point_date|bjtime }}</td>
+          <td>{{ "%.1f"|format(alert.current_value) if alert.current_value is not none else "-" }}</td>
+          <td>{{ "%.1f"|format(alert.baseline_value) if alert.baseline_value is not none else "-" }}</td>
+          <td>{{ "%+.1f%%"|format(alert.change_pct) if alert.change_pct is not none else "N/A" }}</td>
+          <td>{{ alert.rule }}</td>
+          <td>{{ alert.message }}</td>
+          <td>{{ alert.created_at|bjtime }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="11" class="empty">暂无告警。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

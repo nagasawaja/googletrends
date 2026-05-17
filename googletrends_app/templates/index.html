@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}关键词 - Google Trends Monitor{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1>关键词监控</h1>
+    <p>全球范围，多周期监控：now 7-d 抓短线异动，today 3-m 确认趋势，today 12-m 判断历史热度。</p>
+  </div>
+  <form method="post" action="/collect/run-now">
+    <button class="button primary" type="submit">创建全部监控任务</button>
+  </form>
+</section>
+
+<section class="panel">
+  <form class="inline-form" method="post" action="/keywords">
+    <label for="term">新增关键词</label>
+    <input id="term" name="term" type="text" placeholder="例如 ChatGPT" required>
+    <button class="button" type="submit">添加</button>
+  </form>
+</section>
+
+<section class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>关键词</th>
+        <th>状态</th>
+        <th>趋势点</th>
+        <th>最近成功</th>
+        <th>最近失败</th>
+        <th>活跃任务</th>
+        <th>连续失败</th>
+        <th>最近状态</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for keyword in keywords %}
+        <tr>
+          <td><a class="strong-link" href="/keywords/{{ keyword.id }}">{{ keyword.term }}</a></td>
+          <td>
+            {% if keyword.enabled %}
+              <span class="pill ok">启用</span>
+            {% else %}
+              <span class="pill muted">暂停</span>
+            {% endif %}
+          </td>
+          <td>{{ keyword.points_count }}</td>
+          <td>{{ keyword.last_success_at|bjtime if keyword.last_success_at else "尚未成功" }}</td>
+          <td>{{ keyword.last_failed_at|bjtime }}</td>
+          <td>{{ keyword.active_jobs_count }}</td>
+          <td>{{ keyword.consecutive_failures }}</td>
+          <td>
+            {% if keyword.last_status == "success" %}
+              <span class="pill ok">成功</span>
+            {% elif keyword.last_status == "failed" %}
+              <span class="pill bad" title="{{ keyword.last_error }}">失败</span>
+            {% elif keyword.last_status == "queued" %}
+              <span class="pill muted">排队中</span>
+            {% elif keyword.last_status == "running" %}
+              <span class="pill warn">采集中</span>
+            {% elif keyword.last_status %}
+              <span class="pill muted">{{ keyword.last_status }}</span>
+            {% else %}
+              -
+            {% endif %}
+          </td>
+          <td class="actions">
+            <form method="post" action="/keywords/{{ keyword.id }}/toggle">
+              <button class="button small" type="submit">{{ "暂停" if keyword.enabled else "恢复" }}</button>
+            </form>
+            <form method="post" action="/keywords/{{ keyword.id }}/delete">
+              <button class="button danger small" type="submit">删除</button>
+            </form>
+          </td>
+        </tr>
+      {% else %}
+        <tr>
+          <td colspan="9" class="empty">还没有关键词。</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Google Trends Monitor{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">Google Trends Monitor</a>
+    <nav class="nav">
+      <a href="/">关键词</a>
+      <a href="/runs">采集任务</a>
+      <a href="/alerts">告警</a>
+      <a href="/backtest">历史回测</a>
+    </nav>
+  </header>
+  <main class="shell">
+    {% if message %}
+      <div class="notice success">{{ message }}</div>
+    {% endif %}
+    {% if error %}
+      <div class="notice error">{{ error }}</div>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}采集任务 - Google Trends Monitor{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1>采集任务</h1>
+    <p>手动采集会为每个关键词创建 3 个周期任务；短线任务按小时定时创建，中长期任务每天创建。</p>
+  </div>
+</section>
+
+<section class="filters">
+  <a class="{{ 'active' if not status else '' }}" href="/runs">全部</a>
+  <a class="{{ 'active' if status == 'queued' else '' }}" href="/runs?status=queued">排队中</a>
+  <a class="{{ 'active' if status == 'running' else '' }}" href="/runs?status=running">采集中</a>
+  <a class="{{ 'active' if status == 'success' else '' }}" href="/runs?status=success">成功</a>
+  <a class="{{ 'active' if status == 'failed' else '' }}" href="/runs?status=failed">失败</a>
+</section>
+
+<section class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>关键词</th>
+        <th>来源</th>
+        <th>周期</th>
+        <th>创建时间</th>
+        <th>开始时间</th>
+        <th>结束时间</th>
+        <th>状态</th>
+        <th>尝试</th>
+        <th>下次重试</th>
+        <th>点数</th>
+        <th>错误</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in runs %}
+        <tr>
+          <td>#{{ run.id }}</td>
+          <td>{{ run.term or "已删除" }}</td>
+          <td>{{ "定时" if run.source.startswith("scheduled") else "手动" }}</td>
+          <td>{{ run.timeframe }}</td>
+          <td>{{ run.created_at|bjtime }}</td>
+          <td>{{ run.started_at|bjtime }}</td>
+          <td>{{ run.finished_at|bjtime }}</td>
+          <td>
+            {% if run.status == "success" %}
+              <span class="pill ok">成功</span>
+            {% elif run.status == "failed" %}
+              <span class="pill bad">失败</span>
+            {% elif run.status == "queued" %}
+              <span class="pill muted">排队中</span>
+            {% elif run.status == "running" %}
+              <span class="pill warn">采集中</span>
+            {% else %}
+              <span class="pill muted">{{ run.status }}</span>
+            {% endif %}
+          </td>
+          <td>{{ run.attempts }} / {{ run.max_attempts }}</td>
+          <td>{{ run.next_attempt_at|bjtime }}</td>
+          <td>{{ run.points_collected }}</td>
+          <td class="error-text">{{ run.error or "" }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="12" class="empty">暂无采集任务。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
