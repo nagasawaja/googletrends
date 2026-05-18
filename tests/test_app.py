@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from datetime import date, timedelta
 
@@ -8,6 +9,7 @@ from fastapi.testclient import TestClient
 from googletrends_app import collector, repository
 from googletrends_app.database import connect, initialize_database
 from googletrends_app.main import create_app
+from googletrends_app.proxy_check import ProxyCheckResult
 from googletrends_app.time_utils import format_beijing
 from googletrends_app.trends import SHORT_TIMEFRAME, TrendPoint
 
@@ -25,9 +27,16 @@ class FakeProvider:
         ]
         self.fail_times = fail_times
         self.calls: list[dict[str, str]] = []
+        self.last_proxy_name: str | None = None
+        self.last_proxy_url: str | None = None
+        self.last_profile_key: str | None = None
 
     def collect_keyword(self, term: str, timeframe: str, geo: str) -> list[TrendPoint]:
         self.calls.append({"term": term, "timeframe": timeframe, "geo": geo})
+        attempt_no = len(self.calls)
+        self.last_proxy_name = f"node-{attempt_no}"
+        self.last_proxy_url = f"http://proxy-{attempt_no}.example:8080"
+        self.last_profile_key = self.last_proxy_url
         if len(self.calls) <= self.fail_times:
             raise RuntimeError("provider unavailable")
         return self.points
@@ -50,21 +59,80 @@ class FakeNotifier:
         return True
 
 
+class FakeUiClashController:
+    controller_url = "http://127.0.0.1:49266"
+    proxy_group = "Google"
+
+    def __init__(self) -> None:
+        self.rotations = 0
+        self.group: dict[str, object] = {
+            "now": "node-a",
+            "all": ["DIRECT", "node-a", "node-b"],
+        }
+
+    def get_mode(self) -> str:
+        return "rule"
+
+    def effective_proxy_group_name(self) -> str:
+        return self.proxy_group
+
+    def get_proxy_group(self, proxy_group: str | None = None) -> dict[str, object]:
+        return self.group
+
+    def available_candidates(self, group: dict[str, object]) -> list[str]:
+        values = group.get("all")
+        if not isinstance(values, list):
+            return []
+        return [str(value) for value in values if value != "DIRECT"]
+
+    def rotate_proxy(self) -> str:
+        self.rotations += 1
+        self.group["now"] = "node-b"
+        return "node-b"
+
+    def rotate_proxy_with_group(self) -> tuple[str, str]:
+        selected = self.rotate_proxy()
+        return self.proxy_group, selected
+
+
+class FakeGlobalClashController(FakeUiClashController):
+    def __init__(self) -> None:
+        super().__init__()
+        self.group = {
+            "now": "global-node-a",
+            "all": ["DIRECT", "global-node-a", "global-node-b"],
+        }
+
+    def get_mode(self) -> str:
+        return "global"
+
+    def effective_proxy_group_name(self) -> str:
+        return "GLOBAL"
+
+
 def make_client(
     tmp_path,
     provider: FakeProvider,
     notifier: FakeNotifier | None = None,
-    max_attempts: int = 3,
+    max_attempts: int = 5,
 ) -> TestClient:
-    app = create_app(
-        db_path=tmp_path / "test.sqlite3",
-        trends_provider=provider,
-        notifier=notifier or FakeNotifier(),
-        start_scheduler=False,
-        request_delay_seconds=0,
-        retry_delay_seconds=0,
-        max_attempts=max_attempts,
-    )
+    previous_auto_detect = os.environ.get("GOOGLETRENDS_PROXY_AUTO_DETECT_LOCAL_CLASH")
+    os.environ["GOOGLETRENDS_PROXY_AUTO_DETECT_LOCAL_CLASH"] = "0"
+    try:
+        app = create_app(
+            db_path=tmp_path / "test.sqlite3",
+            trends_provider=provider,
+            notifier=notifier or FakeNotifier(),
+            start_scheduler=False,
+            request_delay_seconds=0,
+            retry_delay_seconds=0,
+            max_attempts=max_attempts,
+        )
+    finally:
+        if previous_auto_detect is None:
+            os.environ.pop("GOOGLETRENDS_PROXY_AUTO_DETECT_LOCAL_CLASH", None)
+        else:
+            os.environ["GOOGLETRENDS_PROXY_AUTO_DETECT_LOCAL_CLASH"] = previous_auto_detect
     return TestClient(app)
 
 
@@ -110,6 +178,85 @@ def test_beijing_time_formatting() -> None:
     assert format_beijing("2026-05-17 03:00:00") == "2026-05-17 11:00:00"
     assert format_beijing("2026-05-17") == "2026-05-17 00:00:00"
     assert format_beijing("2026-05-17", timeframe="now 7-d") == "2026-05-17 08:00:00"
+
+
+def test_proxy_check_page_shows_current_status(tmp_path) -> None:
+    provider = FakeProvider()
+    with make_client(tmp_path, provider) as client:
+        response = client.get("/proxy-check")
+
+        assert response.status_code == 200
+        assert "代理验证" in response.text
+        assert "当前配置" in response.text
+        assert "未启用" in response.text
+
+
+def test_proxy_check_can_be_run_without_real_network(tmp_path, monkeypatch) -> None:
+    def fake_run_proxy_check(settings, proxy_pool):
+        return ProxyCheckResult(
+            ok=True,
+            checked_at="2026-05-18 10:00:00",
+            proxy_url="http://127.0.0.1:7890",
+            proxy_ip="203.0.113.10",
+            direct_ip="198.51.100.20",
+            elapsed_ms=123,
+            error="",
+            warning="",
+        )
+
+    monkeypatch.setattr("googletrends_app.main.run_proxy_check", fake_run_proxy_check)
+    provider = FakeProvider()
+    with make_client(tmp_path, provider) as client:
+        response = client.post("/proxy-check")
+
+        assert response.status_code == 200
+        assert "验证结果" in response.text
+        assert "203.0.113.10" in response.text
+        assert "2026-05-18 10:00:00" in response.text
+
+
+def test_proxy_check_page_shows_clash_controller_status(tmp_path) -> None:
+    provider = FakeProvider()
+    with make_client(tmp_path, provider) as client:
+        client.app.state.clash_controller = FakeUiClashController()
+
+        response = client.get("/proxy-check")
+
+        assert response.status_code == 200
+        assert "Clash 控制器可用" in response.text
+        assert "node-a" in response.text
+        assert "网络失败自动切换" in response.text
+
+
+def test_proxy_check_page_focuses_on_effective_group_in_global_mode(tmp_path) -> None:
+    provider = FakeProvider()
+    with make_client(tmp_path, provider) as client:
+        client.app.state.clash_controller = FakeGlobalClashController()
+
+        response = client.get("/proxy-check")
+
+        assert response.status_code == 200
+        assert "代理入口" in response.text
+        assert "订阅代理" not in response.text
+        assert "配置代理组" not in response.text
+        assert "规则模式代理组" not in response.text
+        assert "生效代理组" in response.text
+        assert "GLOBAL" in response.text
+        assert "global-node-a" in response.text
+
+
+def test_proxy_check_can_rotate_clash_proxy_group(tmp_path) -> None:
+    provider = FakeProvider()
+    clash = FakeUiClashController()
+    with make_client(tmp_path, provider) as client:
+        client.app.state.clash_controller = clash
+
+        response = client.post("/proxy-check/rotate-clash")
+
+        assert response.status_code == 200
+        assert "节点切换结果" in response.text
+        assert "node-b" in response.text
+        assert clash.rotations == 1
 
 
 def test_manual_collection_queues_job_and_saves_points(tmp_path) -> None:
@@ -184,6 +331,51 @@ def test_failed_collection_records_job_error_and_notifies(tmp_path) -> None:
         ]
 
 
+def test_collection_runs_show_failed_attempt_details_for_retries(tmp_path) -> None:
+    provider = FakeProvider(fail_times=2)
+    with make_client(tmp_path, provider, max_attempts=5) as client:
+        with connect(client.app.state.db_path) as conn:
+            keyword = repository.create_keyword(conn, "ChatGPT")
+            collector.enqueue_keyword_job(
+                conn,
+                keyword_id=keyword["id"],
+                max_attempts=5,
+                timeframe=SHORT_TIMEFRAME,
+            )
+
+        collector.process_due_jobs_for_path(
+            db_path=client.app.state.db_path,
+            provider=provider,
+            retry_delay_seconds=0,
+            request_delay_seconds=0,
+            max_jobs=3,
+        )
+
+        response = client.get("/runs")
+
+        assert response.status_code == 200
+        assert "失败明细" in response.text
+        assert "第 1 次" in response.text
+        assert "第 2 次" in response.text
+        assert "node-1" in response.text
+        assert "node-2" in response.text
+
+        with connect(client.app.state.db_path) as conn:
+            jobs = repository.list_jobs(conn, limit=10)
+            job = next(run for run in jobs if run["term"] == "ChatGPT")
+            assert job["attempts"] == 3
+            attempts = repository.list_collection_job_attempts(conn, job["id"])
+            assert [row["attempt_no"] for row in attempts] == [1, 2]
+            assert [row["proxy_name"] for row in attempts] == [
+                "node-1",
+                "node-2",
+            ]
+            assert [row["proxy_url"] for row in attempts] == [
+                "http://proxy-1.example:8080",
+                "http://proxy-2.example:8080",
+            ]
+
+
 def test_failed_job_is_requeued_before_max_attempts(tmp_path) -> None:
     db_path = tmp_path / "test.sqlite3"
     initialize_database(db_path)
@@ -215,7 +407,7 @@ def test_failed_job_is_requeued_before_max_attempts(tmp_path) -> None:
         assert notifier.messages == []
 
 
-def test_google_rate_limit_uses_longer_retry_delay(tmp_path) -> None:
+def test_google_rate_limit_uses_short_retry_delay_with_proxy_rotation(tmp_path) -> None:
     db_path = tmp_path / "test.sqlite3"
     initialize_database(db_path)
     provider = FailingProvider("The request failed: Google returned a response with code 429")
@@ -240,7 +432,7 @@ def test_google_rate_limit_uses_longer_retry_delay(tmp_path) -> None:
         updated = repository.get_collection_job(conn, job["id"])
 
         assert results[0]["status"] == "queued"
-        assert results[0]["retry_delay_seconds"] == 1800
+        assert results[0]["retry_delay_seconds"] == 5
         assert updated["status"] == "queued"
         assert updated["error"] == "Google Trends 限流 429：请求过于频繁，已自动延后重试。"
         assert updated["next_attempt_at"] is not None

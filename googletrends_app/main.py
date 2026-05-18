@@ -13,8 +13,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import backtest, collector, repository, worker
+from .clash import build_clash_controller
 from .database import connect, initialize_database
 from .notifier import Notifier, build_notifier
+from .proxy_check import build_proxy_runtime_status, rotate_clash_proxy, run_proxy_check
+from .proxy_pool import build_proxy_pool
+from .request_profiles import build_request_profile_pool
 from .settings import load_settings
 from .time_utils import format_beijing
 from .trends import (
@@ -72,6 +76,21 @@ def create_app(
         if p2_alert_cooldown_hours is None
         else p2_alert_cooldown_hours
     )
+    clash_controller = build_runtime_clash_controller(settings)
+    resolved_proxy_urls = settings.proxy_urls
+    if resolved_proxy_urls is None and clash_controller is not None:
+        resolved_proxy_urls = settings.clash_proxy_url
+    proxy_pool = build_proxy_pool(
+        proxy_urls=resolved_proxy_urls,
+        subscription_url=settings.proxy_subscription_url,
+        refresh_seconds=settings.proxy_refresh_seconds,
+        auto_detect_proxy_url=(
+            settings.clash_proxy_url if settings.proxy_auto_detect_local_clash else None
+        ),
+    )
+    request_profile_pool = build_request_profile_pool(
+        enabled=settings.request_profiles_enabled,
+    )
 
     @asynccontextmanager
     async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
@@ -128,7 +147,18 @@ def create_app(
     app = FastAPI(title="Google Trends Monitor MVP", lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
     app.state.db_path = resolved_db_path
-    app.state.trends_provider = trends_provider or PytrendsProvider()
+    app.state.settings = settings
+    app.state.proxy_pool = proxy_pool
+    app.state.clash_controller = clash_controller
+    app.state.request_profile_pool = request_profile_pool
+    app.state.trends_provider = trends_provider or PytrendsProvider(
+        proxy_pool=proxy_pool,
+        request_profile_pool=request_profile_pool,
+        clash_controller=clash_controller,
+        clash_rotate_on_429=settings.clash_rotate_on_429,
+        clash_rotate_on_error=settings.clash_rotate_on_error,
+        clash_retry_after_rotate=settings.clash_retry_after_rotate,
+    )
     app.state.notifier = resolved_notifier
     app.state.scheduler = None
     app.state.worker_lock = threading.Lock()
@@ -153,9 +183,59 @@ def get_db(request: Request) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def build_runtime_clash_controller(settings):
+    if settings.clash_enabled:
+        return build_clash_controller(
+            enabled=True,
+            controller_url=settings.clash_controller_url,
+            secret=settings.clash_secret,
+            proxy_group=settings.clash_proxy_group,
+            config_path=settings.clash_config_path,
+            skip_proxy_names=settings.clash_skip_proxy_names,
+            allowed_proxy_name_keywords=settings.clash_allowed_proxy_name_keywords,
+        )
+    if not settings.proxy_auto_detect_local_clash:
+        return None
+    try:
+        return build_clash_controller(
+            enabled=True,
+            controller_url=settings.clash_controller_url,
+            secret=settings.clash_secret,
+            proxy_group=settings.clash_proxy_group,
+            config_path=settings.clash_config_path,
+            skip_proxy_names=settings.clash_skip_proxy_names,
+            allowed_proxy_name_keywords=settings.clash_allowed_proxy_name_keywords,
+        )
+    except Exception:
+        return None
+
+
 @router.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.get("/proxy-check", response_class=HTMLResponse)
+def proxy_check_page(request: Request) -> HTMLResponse:
+    return render_proxy_check(request)
+
+
+@router.post("/proxy-check", response_class=HTMLResponse)
+def run_proxy_check_page(request: Request) -> HTMLResponse:
+    result = run_proxy_check(
+        request.app.state.settings,
+        request.app.state.proxy_pool,
+    )
+    return render_proxy_check(request, result=result)
+
+
+@router.post("/proxy-check/rotate-clash", response_class=HTMLResponse)
+def rotate_clash_proxy_page(request: Request) -> HTMLResponse:
+    rotate_result = rotate_clash_proxy(
+        request.app.state.settings,
+        request.app.state.clash_controller,
+    )
+    return render_proxy_check(request, rotate_result=rotate_result)
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -329,12 +409,19 @@ def runs(
     message: str | None = None,
     status: str | None = None,
 ) -> HTMLResponse:
+    runs = repository.list_jobs(conn, status=status)
+    attempts_by_job_id = {
+        run["id"]: repository.list_collection_job_attempts(conn, run["id"])
+        for run in runs
+        if run["attempts"] > 1
+    }
     return templates.TemplateResponse(
         request=request,
         name="runs.html",
         context={
             "request": request,
-            "runs": repository.list_jobs(conn, status=status),
+            "runs": runs,
+            "attempts_by_job_id": attempts_by_job_id,
             "message": message,
             "status": status,
         },
@@ -429,6 +516,27 @@ def redirect(path: str, message: str | None = None, error: str | None = None) ->
 
         path = f"{path}?{urlencode(params)}"
     return RedirectResponse(path, status_code=303)
+
+
+def render_proxy_check(
+    request: Request,
+    result: object | None = None,
+    rotate_result: object | None = None,
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="proxy_check.html",
+        context={
+            "request": request,
+            "status": build_proxy_runtime_status(
+                request.app.state.settings,
+                request.app.state.proxy_pool,
+                request.app.state.clash_controller,
+            ),
+            "result": result,
+            "rotate_result": rotate_result,
+        },
+    )
 
 
 def build_chart(points: list[sqlite3.Row]) -> dict[str, object]:

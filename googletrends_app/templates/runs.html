@@ -62,6 +62,39 @@
           <td>{{ run.points_collected }}</td>
           <td class="error-text">{{ run.error or "" }}</td>
         </tr>
+        {% set attempt_rows = attempts_by_job_id.get(run.id, []) %}
+        {% if run.attempts > 1 and attempt_rows %}
+          <tr class="attempt-detail-row">
+            <td colspan="12">
+              <div class="attempt-details">
+                <div class="attempt-details-head">
+                  <strong>失败明细</strong>
+                  <span>仅展示失败尝试</span>
+                </div>
+                <table class="attempt-log">
+                  <thead>
+                    <tr>
+                      <th>第几次</th>
+                      <th>失败时间</th>
+                      <th>节点</th>
+                      <th>原因</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for attempt in attempt_rows %}
+                      <tr>
+                        <td>第 {{ attempt.attempt_no }} 次</td>
+                        <td>{{ attempt.finished_at|bjtime }}</td>
+                        <td>{{ attempt.proxy_name or "-" }}</td>
+                        <td class="error-text">{{ attempt.error or "" }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            </td>
+          </tr>
+        {% endif %}
       {% else %}
         <tr><td colspan="12" class="empty">暂无采集任务。</td></tr>
       {% endfor %}

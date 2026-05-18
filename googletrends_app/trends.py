@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Protocol
 
+from .clash import ClashController
+from .proxy_pool import ProxyPool
+from .request_profiles import RequestProfilePool
+
 
 SHORT_TIMEFRAME = "now 7-d"
 MID_TIMEFRAME = "today 3-m"
@@ -73,9 +77,28 @@ class TrendsProvider(Protocol):
 
 
 class PytrendsProvider:
-    def __init__(self, hl: str = "en-US", tz: int = 480) -> None:
+    def __init__(
+        self,
+        hl: str = "en-US",
+        tz: int = 480,
+        proxy_pool: ProxyPool | None = None,
+        request_profile_pool: RequestProfilePool | None = None,
+        clash_controller: ClashController | None = None,
+        clash_rotate_on_429: bool = True,
+        clash_rotate_on_error: bool = True,
+        clash_retry_after_rotate: bool = True,
+    ) -> None:
         self.hl = hl
         self.tz = tz
+        self.proxy_pool = proxy_pool
+        self.request_profile_pool = request_profile_pool
+        self.clash_controller = clash_controller
+        self.clash_rotate_on_429 = clash_rotate_on_429
+        self.clash_rotate_on_error = clash_rotate_on_error
+        self.clash_retry_after_rotate = clash_retry_after_rotate
+        self.last_proxy_name: str | None = None
+        self.last_proxy_url: str | None = None
+        self.last_profile_key: str | None = None
 
     def collect_keyword(
         self,
@@ -83,9 +106,55 @@ class PytrendsProvider:
         timeframe: str = DEFAULT_TIMEFRAME,
         geo: str = DEFAULT_GEO,
     ) -> list[TrendPoint]:
+        try:
+            return self._collect_keyword_once(term, timeframe=timeframe, geo=geo)
+        except Exception as exc:
+            if not self._should_rotate_clash_proxy(exc):
+                raise
+            try:
+                selected_proxy = (
+                    self.clash_controller.rotate_proxy()
+                    if self.clash_controller
+                    else None
+                )
+            except Exception as rotate_exc:
+                raise RuntimeError(
+                    f"{exc} (Clash proxy rotation failed: {rotate_exc})"
+                ) from exc
+            if selected_proxy and self.clash_retry_after_rotate:
+                return self._collect_keyword_once(
+                    term,
+                    timeframe=timeframe,
+                    geo=geo,
+                    profile_key=f"clash:{selected_proxy}",
+                )
+            raise
+
+    def _collect_keyword_once(
+        self,
+        term: str,
+        timeframe: str = DEFAULT_TIMEFRAME,
+        geo: str = DEFAULT_GEO,
+        profile_key: str | None = None,
+    ) -> list[TrendPoint]:
         from pytrends.request import TrendReq
 
-        pytrends = TrendReq(hl=self.hl, tz=self.tz)
+        proxy_url = self.proxy_pool.next_proxy_url() if self.proxy_pool else None
+        proxy_name = getattr(self.proxy_pool, "last_proxy_name", None) if self.proxy_pool else None
+        if proxy_name is None:
+            proxy_name = "direct" if proxy_url is None else proxy_url
+        self.last_proxy_name = proxy_name
+        self.last_proxy_url = proxy_url
+        identity_key = profile_key or proxy_name or "direct"
+        self.last_profile_key = identity_key
+        trend_kwargs: dict[str, object] = {"hl": self.hl, "tz": self.tz}
+        if proxy_url:
+            trend_kwargs["proxies"] = [proxy_url]
+        if self.request_profile_pool is not None:
+            trend_kwargs["requests_args"] = {
+                "headers": self.request_profile_pool.headers_for(identity_key)
+            }
+        pytrends = TrendReq(**trend_kwargs)
         pytrends.build_payload([term], timeframe=timeframe, geo=geo)
         data = pytrends.interest_over_time()
         if data.empty:
@@ -116,3 +185,20 @@ class PytrendsProvider:
                 )
             )
         return points
+
+    def _should_rotate_clash_proxy(self, exc: Exception) -> bool:
+        if self.clash_controller is None:
+            return False
+        if self.clash_rotate_on_429 and is_rate_limit_error(str(exc)):
+            return True
+        return self.clash_rotate_on_error
+
+
+def is_rate_limit_error(error: str) -> bool:
+    text = error.lower()
+    return (
+        "429" in text
+        or "too many requests" in text
+        or "rate limit" in text
+        or "ratelimit" in text
+    )

@@ -12,8 +12,13 @@ services:
     environment:
       GOOGLETRENDS_DB_PATH: /app/data/googletrends.sqlite3
       GOOGLETRENDS_PUBLIC_BASE_URL: http://127.0.0.1:8000
+      GOOGLETRENDS_PROXY_URLS: ${GOOGLETRENDS_PROXY_URLS:-http://host.docker.internal:7890}
+      GOOGLETRENDS_PROXY_AUTO_DETECT_LOCAL_CLASH: ${GOOGLETRENDS_PROXY_AUTO_DETECT_LOCAL_CLASH:-0}
+      GOOGLETRENDS_CLASH_ENABLED: ${GOOGLETRENDS_CLASH_ENABLED:-0}
     volumes:
       - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test:
         [

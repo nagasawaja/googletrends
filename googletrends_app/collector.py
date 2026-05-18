@@ -24,7 +24,9 @@ ALERT_RULE_PREFIX = "trend_radar"
 DEFAULT_PUBLIC_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_P1_ALERT_COOLDOWN_HOURS = 6
 DEFAULT_P2_ALERT_COOLDOWN_HOURS = 24
-RATE_LIMIT_RETRY_SECONDS = 30 * 60
+DEFAULT_RETRY_DELAY_SECONDS = 5
+RATE_LIMIT_RETRY_SECONDS = 5
+DEFAULT_MAX_ATTEMPTS = 5
 
 
 @dataclass(frozen=True)
@@ -129,7 +131,7 @@ def enqueue_keyword_job(
     conn: sqlite3.Connection,
     keyword_id: int,
     source: str = "manual",
-    max_attempts: int = 3,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     timeframe: str = DEFAULT_TIMEFRAME,
     geo: str = DEFAULT_GEO,
 ) -> sqlite3.Row:
@@ -147,7 +149,7 @@ def enqueue_keyword_jobs(
     conn: sqlite3.Connection,
     keyword_id: int,
     source: str = "manual",
-    max_attempts: int = 3,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     timeframes: tuple[str, ...] | None = None,
     geo: str = DEFAULT_GEO,
 ) -> list[sqlite3.Row]:
@@ -173,7 +175,7 @@ def enqueue_keyword_jobs(
 def enqueue_enabled_jobs(
     conn: sqlite3.Connection,
     source: str = "manual",
-    max_attempts: int = 3,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     timeframes: tuple[str, ...] | None = None,
     geo: str = DEFAULT_GEO,
 ) -> list[sqlite3.Row]:
@@ -189,7 +191,7 @@ def enqueue_enabled_jobs(
 def enqueue_enabled_jobs_for_path(
     db_path: str | Path,
     source: str = "scheduled",
-    max_attempts: int = 3,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     timeframes: tuple[str, ...] | None = None,
     geo: str = DEFAULT_GEO,
 ) -> list[int]:
@@ -211,7 +213,7 @@ def process_due_jobs(
     notifier: Notifier | None = None,
     timeframe: str = DEFAULT_TIMEFRAME,
     geo: str = DEFAULT_GEO,
-    retry_delay_seconds: int = 300,
+    retry_delay_seconds: int = DEFAULT_RETRY_DELAY_SECONDS,
     request_delay_seconds: float = 2,
     max_jobs: int | None = None,
     sleep_func=time.sleep,
@@ -254,7 +256,7 @@ def process_due_jobs_for_path(
     notifier: Notifier | None = None,
     timeframe: str = DEFAULT_TIMEFRAME,
     geo: str = DEFAULT_GEO,
-    retry_delay_seconds: int = 300,
+    retry_delay_seconds: int = DEFAULT_RETRY_DELAY_SECONDS,
     request_delay_seconds: float = 2,
     max_jobs: int | None = None,
     public_base_url: str | None = DEFAULT_PUBLIC_BASE_URL,
@@ -285,7 +287,7 @@ def process_collection_job(
     notifier: Notifier,
     timeframe: str = DEFAULT_TIMEFRAME,
     geo: str = DEFAULT_GEO,
-    retry_delay_seconds: int = 300,
+    retry_delay_seconds: int = DEFAULT_RETRY_DELAY_SECONDS,
     public_base_url: str | None = DEFAULT_PUBLIC_BASE_URL,
     p1_alert_cooldown_hours: int = DEFAULT_P1_ALERT_COOLDOWN_HOURS,
     p2_alert_cooldown_hours: int = DEFAULT_P2_ALERT_COOLDOWN_HOURS,
@@ -344,6 +346,18 @@ def process_collection_job(
     except Exception as exc:
         raw_error = str(exc)
         error = format_collection_error(raw_error)
+        repository.record_collection_job_attempt(
+            conn,
+            job_id=job["id"],
+            attempt_no=job["attempts"],
+            finished_at=utc_now(),
+            status="failed",
+            proxy_name=provider_last_proxy_name(provider),
+            proxy_url=provider_last_proxy_url(provider),
+            profile_key=provider_last_profile_key(provider),
+            error=error,
+            started_at=job["started_at"] if "started_at" in job.keys() else None,
+        )
         if job["attempts"] < job["max_attempts"]:
             retry_seconds = next_retry_delay_seconds(
                 raw_error=raw_error,
@@ -407,6 +421,18 @@ def next_retry_delay_seconds(
         return retry_delay_seconds
     multiplier = max(1, 2 ** max(attempts - 1, 0))
     return RATE_LIMIT_RETRY_SECONDS * multiplier
+
+
+def provider_last_proxy_url(provider: TrendsProvider) -> str | None:
+    return getattr(provider, "last_proxy_url", None)
+
+
+def provider_last_proxy_name(provider: TrendsProvider) -> str | None:
+    return getattr(provider, "last_proxy_name", None)
+
+
+def provider_last_profile_key(provider: TrendsProvider) -> str | None:
+    return getattr(provider, "last_profile_key", None)
 
 
 def evaluate_alerts(

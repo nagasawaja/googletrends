@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS collection_jobs (
     geo TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'queued',
     attempts INTEGER NOT NULL DEFAULT 0,
-    max_attempts INTEGER NOT NULL DEFAULT 3,
+    max_attempts INTEGER NOT NULL DEFAULT 5,
     next_attempt_at TEXT,
     started_at TEXT,
     finished_at TEXT,
@@ -45,6 +45,21 @@ CREATE TABLE IF NOT EXISTS collection_jobs (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (keyword_id) REFERENCES keywords(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS collection_job_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    attempt_no INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'failed',
+    proxy_name TEXT,
+    proxy_url TEXT,
+    profile_key TEXT,
+    error TEXT,
+    started_at TEXT,
+    finished_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (job_id) REFERENCES collection_jobs(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS trend_points (
@@ -85,6 +100,7 @@ MIGRATIONS: dict[str, dict[str, str]] = {
         "timeframes": "ALTER TABLE keywords ADD COLUMN timeframes TEXT NOT NULL DEFAULT 'now 7-d,today 3-m'",
     },
     "collection_jobs": {
+        "max_attempts": "ALTER TABLE collection_jobs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 5",
         "timeframe": "ALTER TABLE collection_jobs ADD COLUMN timeframe TEXT NOT NULL DEFAULT 'today 12-m'",
         "geo": "ALTER TABLE collection_jobs ADD COLUMN geo TEXT NOT NULL DEFAULT ''",
     },

@@ -187,7 +187,7 @@ def create_collection_job(
     conn: sqlite3.Connection,
     keyword_id: int,
     source: str = "manual",
-    max_attempts: int = 3,
+    max_attempts: int = 5,
     next_attempt_at: str | None = None,
     timeframe: str = "today 12-m",
     geo: str = "",
@@ -224,7 +224,7 @@ def create_collection_job(
 def create_collection_jobs_for_enabled(
     conn: sqlite3.Connection,
     source: str = "manual",
-    max_attempts: int = 3,
+    max_attempts: int = 5,
     timeframes: tuple[str, ...] | None = None,
     geo: str = "",
 ) -> list[sqlite3.Row]:
@@ -377,6 +377,56 @@ def requeue_collection_job(
         (next_attempt_at, error, job_id),
     )
     conn.commit()
+
+
+def record_collection_job_attempt(
+    conn: sqlite3.Connection,
+    job_id: int,
+    attempt_no: int,
+    finished_at: str,
+    status: str = "failed",
+    proxy_name: str | None = None,
+    proxy_url: str | None = None,
+    profile_key: str | None = None,
+    error: str | None = None,
+    started_at: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO collection_job_attempts
+            (job_id, attempt_no, status, proxy_name, proxy_url, profile_key, error, started_at, finished_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            job_id,
+            attempt_no,
+            status,
+            proxy_name,
+            proxy_url,
+            profile_key,
+            error,
+            started_at,
+            finished_at,
+        ),
+    )
+    conn.commit()
+
+
+def list_collection_job_attempts(
+    conn: sqlite3.Connection,
+    job_id: int,
+) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            """
+            SELECT *
+            FROM collection_job_attempts
+            WHERE job_id = ?
+            ORDER BY attempt_no ASC, id ASC
+            """,
+            (job_id,),
+        )
+    )
 
 
 def list_jobs(

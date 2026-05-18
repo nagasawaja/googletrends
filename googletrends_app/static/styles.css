@@ -166,6 +166,11 @@ textarea.error {
   border-color: #b4bdca;
 }
 
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .button.primary {
   background: var(--primary);
   border-color: var(--primary);
@@ -339,6 +344,11 @@ tr:last-child td {
 .notice.error {
   background: var(--bad-bg);
   color: var(--bad-text);
+}
+
+.notice.warning {
+  background: #fff3c6;
+  color: #8a5a00;
 }
 
 .chart {
@@ -586,6 +596,70 @@ tr:last-child td {
   margin-bottom: 4px;
 }
 
+.proxy-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.section-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.section-head h2 {
+  margin-bottom: 0;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  overflow-wrap: anywhere;
+}
+
+.proxy-message {
+  margin: 14px 0 0;
+}
+
+.attempt-detail-row td {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.attempt-details {
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin: -6px 0 6px;
+  padding: 12px;
+}
+
+.attempt-details-head {
+  align-items: baseline;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.attempt-details-head span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.attempt-log {
+  margin: 0;
+  width: 100%;
+}
+
+.attempt-log th,
+.attempt-log td {
+  font-size: 12px;
+  padding: 8px 10px;
+}
+
 @media (max-width: 760px) {
   .topbar,
   .page-head {
@@ -609,6 +683,7 @@ tr:last-child td {
   .inline-form,
   .backtest-form,
   .summary-grid,
+  .proxy-grid,
   .grid-two {
     grid-template-columns: 1fr;
   }

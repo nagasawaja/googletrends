@@ -31,14 +31,65 @@ The default database is `data/googletrends.sqlite3`. Useful environment variable
 GOOGLETRENDS_DB_PATH=/path/to/app.sqlite3
 FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/...
 GOOGLETRENDS_REQUEST_DELAY_SECONDS=2
-GOOGLETRENDS_RETRY_DELAY_SECONDS=300
-GOOGLETRENDS_MAX_ATTEMPTS=3
+GOOGLETRENDS_REQUEST_PROFILES_ENABLED=1
+GOOGLETRENDS_RETRY_DELAY_SECONDS=5
+GOOGLETRENDS_MAX_ATTEMPTS=5
 GOOGLETRENDS_PUBLIC_BASE_URL=http://127.0.0.1:8000
 GOOGLETRENDS_P1_ALERT_COOLDOWN_HOURS=6
 GOOGLETRENDS_P2_ALERT_COOLDOWN_HOURS=24
+GOOGLETRENDS_PROXY_URLS=http://user:pass@proxy.example:8080,socks5h://proxy.example:1080
+GOOGLETRENDS_PROXY_SUBSCRIPTION_URL=https://example.com/subscription
+GOOGLETRENDS_PROXY_REFRESH_SECONDS=3600
+GOOGLETRENDS_PROXY_AUTO_DETECT_LOCAL_CLASH=1
+GOOGLETRENDS_CLASH_ENABLED=1
+GOOGLETRENDS_CLASH_PROXY_URL=http://127.0.0.1:7890
+GOOGLETRENDS_CLASH_CONTROLLER_URL=http://127.0.0.1:49266
+GOOGLETRENDS_CLASH_SECRET=your-clash-secret
+GOOGLETRENDS_CLASH_PROXY_GROUP=Google
+GOOGLETRENDS_CLASH_CONFIG_PATH=~/.config/clash/config.yaml
+GOOGLETRENDS_CLASH_SKIP_PROXY_NAMES=DIRECT,REJECT,REJECT-DROP,PASS
+GOOGLETRENDS_CLASH_ALLOWED_PROXY_NAME_KEYWORDS=香港,日本,美国,新加坡,狮城,台湾
+GOOGLETRENDS_CLASH_ROTATE_ON_429=1
+GOOGLETRENDS_CLASH_ROTATE_ON_ERROR=1
+GOOGLETRENDS_CLASH_RETRY_AFTER_ROTATE=1
 ```
 
 When `FEISHU_WEBHOOK_URL` is not set, notifications are disabled.
+
+`GOOGLETRENDS_REQUEST_PROFILES_ENABLED=1` adds browser-like request headers to pytrends
+and keeps each proxy or Clash node bound to a stable request profile. When Clash rotates
+after a network failure, the immediate retry uses the new node's profile instead of
+reusing the same User-Agent.
+
+Proxy configuration is optional. `GOOGLETRENDS_PROXY_SUBSCRIPTION_URL` is treated as a
+secret and should live in `.env`, not in source control. Subscriptions can contain direct
+HTTP/SOCKS proxy URLs, base64 proxy URL lists, or Clash YAML with `http`, `https`, and
+`socks5` nodes. Clash-native nodes such as `ss`, `vmess`, `vless`, and `trojan` are not
+directly usable by Python requests; run Clash separately and point `GOOGLETRENDS_PROXY_URLS`
+at its local mixed-port instead.
+
+When no explicit proxy is configured, `GOOGLETRENDS_PROXY_AUTO_DETECT_LOCAL_CLASH=1`
+lets the app use `GOOGLETRENDS_CLASH_PROXY_URL` automatically if the local Clash port is
+listening. This covers the common local ClashX `127.0.0.1:7890` setup without enabling
+the Clash controller API.
+
+For a local ClashX Pro setup, prefer the Clash gateway mode:
+
+```bash
+GOOGLETRENDS_CLASH_ENABLED=1
+GOOGLETRENDS_CLASH_PROXY_URL=http://127.0.0.1:7890
+GOOGLETRENDS_CLASH_PROXY_GROUP=Google
+```
+
+When enabled, the app sends pytrends traffic through the local Clash proxy URL.
+On a Google 429 or other request failure, it calls the Clash controller API, switches the
+currently effective proxy group to the next candidate, then retries the collection once.
+In Clash `global` mode this means `GLOBAL`; otherwise it uses `GOOGLETRENDS_CLASH_PROXY_GROUP`.
+Only candidates whose names contain one of `GOOGLETRENDS_CLASH_ALLOWED_PROXY_NAME_KEYWORDS`
+are eligible for automatic or manual rotation.
+If
+`GOOGLETRENDS_CLASH_CONTROLLER_URL` or `GOOGLETRENDS_CLASH_SECRET` is empty, the app
+tries to read them from `GOOGLETRENDS_CLASH_CONFIG_PATH`.
 
 ## Run With Docker
 
@@ -48,6 +99,10 @@ docker compose up -d --build
 ```
 
 Open <http://127.0.0.1:8000>. The compose service mounts `./data` into the container, so SQLite data survives container restarts.
+By default the container sends outbound traffic through the host Clash proxy at
+`http://host.docker.internal:7890`, and it disables local auto-detection so the container
+does not mistake its own loopback for the host proxy. That means the first collection
+attempt in Docker goes through the proxy if the host port is reachable.
 
 Useful commands:
 
