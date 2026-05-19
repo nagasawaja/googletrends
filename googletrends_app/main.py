@@ -4,6 +4,7 @@ import sqlite3
 import threading
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -96,6 +97,10 @@ def create_app(
     async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         initialize_database(app_instance.state.db_path)
         with connect(app_instance.state.db_path) as conn:
+            stale_before = (
+                datetime.now(timezone.utc) - timedelta(minutes=30)
+            ).isoformat(timespec="seconds")
+            repository.requeue_stale_running_jobs(conn, stale_before)
             repository.delete_unmonitored_queued_jobs(conn)
         if scheduler_enabled:
             scheduler = BackgroundScheduler(timezone="Asia/Shanghai")

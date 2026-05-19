@@ -376,6 +376,31 @@ def test_collection_runs_show_failed_attempt_details_for_retries(tmp_path) -> No
             ]
 
 
+def test_startup_requeues_stale_running_jobs(tmp_path) -> None:
+    db_path = tmp_path / "test.sqlite3"
+    initialize_database(db_path)
+    with connect(db_path) as conn:
+        keyword = repository.create_keyword(conn, "ChatGPT")
+        job = repository.create_collection_job(conn, keyword["id"], timeframe=SHORT_TIMEFRAME)
+        conn.execute(
+            """
+            UPDATE collection_jobs
+            SET status = 'running',
+                started_at = '2026-05-01T00:00:00+00:00'
+            WHERE id = ?
+            """,
+            (job["id"],),
+        )
+        conn.commit()
+
+    provider = FakeProvider()
+    with make_client(tmp_path, provider) as client:
+        with connect(client.app.state.db_path) as conn:
+            refreshed = repository.get_collection_job(conn, job["id"])
+            assert refreshed["status"] == "queued"
+            assert refreshed["started_at"] is None
+
+
 def test_failed_job_is_requeued_before_max_attempts(tmp_path) -> None:
     db_path = tmp_path / "test.sqlite3"
     initialize_database(db_path)

@@ -316,6 +316,27 @@ def delete_unmonitored_queued_jobs(conn: sqlite3.Connection) -> int:
     return cursor.rowcount
 
 
+def requeue_stale_running_jobs(
+    conn: sqlite3.Connection,
+    stale_before: str,
+) -> int:
+    cursor = conn.execute(
+        """
+        UPDATE collection_jobs
+        SET status = 'queued',
+            next_attempt_at = NULL,
+            started_at = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE status = 'running'
+          AND started_at IS NOT NULL
+          AND started_at <= ?
+        """,
+        (stale_before,),
+    )
+    conn.commit()
+    return cursor.rowcount
+
+
 def finish_collection_job_success(
     conn: sqlite3.Connection,
     job_id: int,
