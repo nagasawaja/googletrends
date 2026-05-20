@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS keywords (
     term TEXT NOT NULL UNIQUE COLLATE NOCASE,
     enabled INTEGER NOT NULL DEFAULT 1,
     remark TEXT NOT NULL DEFAULT '',
+    gprop TEXT NOT NULL DEFAULT '',
     timeframes TEXT NOT NULL DEFAULT 'now 7-d,today 3-m',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -34,6 +35,7 @@ CREATE TABLE IF NOT EXISTS collection_jobs (
     source TEXT NOT NULL DEFAULT 'manual',
     timeframe TEXT NOT NULL DEFAULT 'today 12-m',
     geo TEXT NOT NULL DEFAULT '',
+    gprop TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'queued',
     attempts INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 5,
@@ -69,10 +71,11 @@ CREATE TABLE IF NOT EXISTS trend_points (
     value INTEGER NOT NULL,
     is_partial INTEGER NOT NULL DEFAULT 0,
     geo TEXT NOT NULL DEFAULT '',
+    gprop TEXT NOT NULL DEFAULT '',
     timeframe TEXT NOT NULL DEFAULT 'today 12-m',
     collected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (keyword_id) REFERENCES keywords(id) ON DELETE CASCADE,
-    UNIQUE (keyword_id, point_date, geo, timeframe)
+    UNIQUE (keyword_id, point_date, geo, gprop, timeframe)
 );
 
 CREATE TABLE IF NOT EXISTS alerts (
@@ -82,6 +85,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     severity TEXT NOT NULL DEFAULT 'P2',
     category TEXT NOT NULL DEFAULT 'trend_change',
     timeframe TEXT NOT NULL DEFAULT 'today 12-m',
+    gprop TEXT NOT NULL DEFAULT '',
     point_date TEXT NOT NULL,
     current_value REAL,
     baseline_value REAL,
@@ -97,12 +101,23 @@ CREATE TABLE IF NOT EXISTS alerts (
 MIGRATIONS: dict[str, dict[str, str]] = {
     "keywords": {
         "remark": "ALTER TABLE keywords ADD COLUMN remark TEXT NOT NULL DEFAULT ''",
+        "gprop": "ALTER TABLE keywords ADD COLUMN gprop TEXT NOT NULL DEFAULT ''",
         "timeframes": "ALTER TABLE keywords ADD COLUMN timeframes TEXT NOT NULL DEFAULT 'now 7-d,today 3-m'",
     },
     "collection_jobs": {
         "max_attempts": "ALTER TABLE collection_jobs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 5",
         "timeframe": "ALTER TABLE collection_jobs ADD COLUMN timeframe TEXT NOT NULL DEFAULT 'today 12-m'",
         "geo": "ALTER TABLE collection_jobs ADD COLUMN geo TEXT NOT NULL DEFAULT ''",
+        "gprop": "ALTER TABLE collection_jobs ADD COLUMN gprop TEXT NOT NULL DEFAULT ''",
+    },
+    "collection_job_attempts": {
+        "proxy_name": "ALTER TABLE collection_job_attempts ADD COLUMN proxy_name TEXT",
+        "proxy_url": "ALTER TABLE collection_job_attempts ADD COLUMN proxy_url TEXT",
+        "profile_key": "ALTER TABLE collection_job_attempts ADD COLUMN profile_key TEXT",
+        "started_at": "ALTER TABLE collection_job_attempts ADD COLUMN started_at TEXT",
+    },
+    "trend_points": {
+        "gprop": "ALTER TABLE trend_points ADD COLUMN gprop TEXT NOT NULL DEFAULT ''",
     },
     "alerts": {
         "severity": "ALTER TABLE alerts ADD COLUMN severity TEXT NOT NULL DEFAULT 'P2'",
@@ -112,6 +127,7 @@ MIGRATIONS: dict[str, dict[str, str]] = {
         "baseline_value": "ALTER TABLE alerts ADD COLUMN baseline_value REAL",
         "change_pct": "ALTER TABLE alerts ADD COLUMN change_pct REAL",
         "remark": "ALTER TABLE alerts ADD COLUMN remark TEXT NOT NULL DEFAULT ''",
+        "gprop": "ALTER TABLE alerts ADD COLUMN gprop TEXT NOT NULL DEFAULT ''",
     },
 }
 
@@ -134,6 +150,7 @@ def initialize_database(db_path: str | Path) -> None:
 
 
 def run_migrations(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS related_panels")
     for table_name, columns in MIGRATIONS.items():
         existing_columns = {
             row["name"]
@@ -142,3 +159,10 @@ def run_migrations(conn: sqlite3.Connection) -> None:
         for column_name, statement in columns.items():
             if column_name not in existing_columns:
                 conn.execute(statement)
+
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_trend_points_unique
+        ON trend_points (keyword_id, point_date, geo, gprop, timeframe)
+        """
+    )

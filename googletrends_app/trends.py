@@ -12,6 +12,8 @@ from .request_profiles import RequestProfilePool
 SHORT_TIMEFRAME = "now 7-d"
 MID_TIMEFRAME = "today 3-m"
 LONG_TIMEFRAME = "today 12-m"
+DEFAULT_GPROP = ""
+AVAILABLE_GPROPS = ("", "images", "news", "youtube", "froogle")
 AVAILABLE_TIMEFRAMES = (
     "now 1-d",
     SHORT_TIMEFRAME,
@@ -28,6 +30,8 @@ MONITORED_TIMEFRAMES = (SHORT_TIMEFRAME, MID_TIMEFRAME)
 DEFAULT_TIMEFRAME = SHORT_TIMEFRAME
 DEFAULT_GEO = ""
 DEFAULT_TIMEFRAMES_TEXT = ",".join(MONITORED_TIMEFRAMES)
+DEFAULT_GPROPS = (DEFAULT_GPROP,)
+DEFAULT_GPROPS_TEXT = DEFAULT_GPROP
 
 
 def parse_timeframes(value: str | None) -> tuple[str, ...]:
@@ -46,6 +50,28 @@ def serialize_timeframes(timeframes: list[str] | tuple[str, ...]) -> str:
     if not selected:
         selected = list(MONITORED_TIMEFRAMES)
     return ",".join(dict.fromkeys(selected))
+
+
+def parse_gprops(value: str | None) -> tuple[str, ...]:
+    if value is None:
+        return DEFAULT_GPROPS
+    selected: list[str] = []
+    for item in value.split(","):
+        gprop = item.strip()
+        if gprop in AVAILABLE_GPROPS and gprop not in selected:
+            selected.append(gprop)
+    return tuple(selected) or DEFAULT_GPROPS
+
+
+def serialize_gprops(gprops: list[str] | tuple[str, ...]) -> str:
+    selected = [item for item in gprops if item in AVAILABLE_GPROPS]
+    if not selected:
+        selected = list(DEFAULT_GPROPS)
+    return ",".join(dict.fromkeys(selected))
+
+
+def parse_gprop(value: str | None) -> str:
+    return parse_gprops(value)[0]
 
 
 @dataclass(frozen=True)
@@ -72,6 +98,7 @@ class TrendsProvider(Protocol):
         term: str,
         timeframe: str = DEFAULT_TIMEFRAME,
         geo: str = DEFAULT_GEO,
+        gprop: str = DEFAULT_GPROP,
     ) -> list[TrendPoint]:
         ...
 
@@ -105,9 +132,15 @@ class PytrendsProvider:
         term: str,
         timeframe: str = DEFAULT_TIMEFRAME,
         geo: str = DEFAULT_GEO,
+        gprop: str = DEFAULT_GPROP,
     ) -> list[TrendPoint]:
         try:
-            return self._collect_keyword_once(term, timeframe=timeframe, geo=geo)
+            return self._collect_keyword_once(
+                term,
+                timeframe=timeframe,
+                geo=geo,
+                gprop=gprop,
+            )
         except Exception as exc:
             if not self._should_rotate_clash_proxy(exc):
                 raise
@@ -126,6 +159,7 @@ class PytrendsProvider:
                     term,
                     timeframe=timeframe,
                     geo=geo,
+                    gprop=gprop,
                     profile_key=f"clash:{selected_proxy}",
                 )
             raise
@@ -135,27 +169,11 @@ class PytrendsProvider:
         term: str,
         timeframe: str = DEFAULT_TIMEFRAME,
         geo: str = DEFAULT_GEO,
+        gprop: str = DEFAULT_GPROP,
         profile_key: str | None = None,
     ) -> list[TrendPoint]:
-        from pytrends.request import TrendReq
-
-        proxy_url = self.proxy_pool.next_proxy_url() if self.proxy_pool else None
-        proxy_name = getattr(self.proxy_pool, "last_proxy_name", None) if self.proxy_pool else None
-        if proxy_name is None:
-            proxy_name = "direct" if proxy_url is None else proxy_url
-        self.last_proxy_name = proxy_name
-        self.last_proxy_url = proxy_url
-        identity_key = profile_key or proxy_name or "direct"
-        self.last_profile_key = identity_key
-        trend_kwargs: dict[str, object] = {"hl": self.hl, "tz": self.tz}
-        if proxy_url:
-            trend_kwargs["proxies"] = [proxy_url]
-        if self.request_profile_pool is not None:
-            trend_kwargs["requests_args"] = {
-                "headers": self.request_profile_pool.headers_for(identity_key)
-            }
-        pytrends = TrendReq(**trend_kwargs)
-        pytrends.build_payload([term], timeframe=timeframe, geo=geo)
+        pytrends = self._build_trend_req(profile_key=profile_key)
+        pytrends.build_payload([term], timeframe=timeframe, geo=geo, gprop=gprop)
         data = pytrends.interest_over_time()
         if data.empty:
             return []
@@ -185,6 +203,26 @@ class PytrendsProvider:
                 )
             )
         return points
+
+    def _build_trend_req(self, profile_key: str | None = None):
+        from pytrends.request import TrendReq
+
+        proxy_url = self.proxy_pool.next_proxy_url() if self.proxy_pool else None
+        proxy_name = getattr(self.proxy_pool, "last_proxy_name", None) if self.proxy_pool else None
+        if proxy_name is None:
+            proxy_name = "direct" if proxy_url is None else proxy_url
+        self.last_proxy_name = proxy_name
+        self.last_proxy_url = proxy_url
+        identity_key = profile_key or proxy_name or "direct"
+        self.last_profile_key = identity_key
+        trend_kwargs: dict[str, object] = {"hl": self.hl, "tz": self.tz}
+        if proxy_url:
+            trend_kwargs["proxies"] = [proxy_url]
+        if self.request_profile_pool is not None:
+            trend_kwargs["requests_args"] = {
+                "headers": self.request_profile_pool.headers_for(identity_key)
+            }
+        return TrendReq(**trend_kwargs)
 
     def _should_rotate_clash_proxy(self, exc: Exception) -> bool:
         if self.clash_controller is None:

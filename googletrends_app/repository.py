@@ -3,7 +3,16 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 
-from .trends import DEFAULT_TIMEFRAMES_TEXT, parse_timeframes, serialize_timeframes
+from .trends import (
+    AVAILABLE_TIMEFRAMES,
+    DEFAULT_GPROPS_TEXT,
+    DEFAULT_TIMEFRAMES_TEXT,
+    parse_gprop,
+    parse_gprops,
+    parse_timeframes,
+    serialize_gprops,
+    serialize_timeframes,
+)
 
 
 def create_keyword(conn: sqlite3.Connection, term: str) -> sqlite3.Row:
@@ -13,10 +22,10 @@ def create_keyword(conn: sqlite3.Connection, term: str) -> sqlite3.Row:
 
     conn.execute(
         """
-        INSERT INTO keywords (term, enabled, timeframes, updated_at)
-        VALUES (?, 1, ?, CURRENT_TIMESTAMP)
+        INSERT INTO keywords (term, enabled, gprop, timeframes, updated_at)
+        VALUES (?, 1, ?, ?, CURRENT_TIMESTAMP)
         """,
-        (cleaned, DEFAULT_TIMEFRAMES_TEXT),
+        (cleaned, DEFAULT_GPROPS_TEXT, DEFAULT_TIMEFRAMES_TEXT),
     )
     conn.commit()
     return get_keyword_by_term(conn, cleaned)
@@ -105,6 +114,14 @@ def keyword_timeframes(keyword: sqlite3.Row) -> tuple[str, ...]:
     return parse_timeframes(keyword["timeframes"] if "timeframes" in keyword.keys() else None)
 
 
+def keyword_gprop(keyword: sqlite3.Row) -> str:
+    return parse_gprops(keyword["gprop"] if "gprop" in keyword.keys() else None)[0]
+
+
+def keyword_gprops(keyword: sqlite3.Row) -> tuple[str, ...]:
+    return parse_gprops(keyword["gprop"] if "gprop" in keyword.keys() else None)
+
+
 def set_keyword_enabled(
     conn: sqlite3.Connection, keyword_id: int, enabled: bool
 ) -> None:
@@ -143,6 +160,16 @@ def update_keyword_timeframes(
     timeframes: Sequence[str],
 ) -> sqlite3.Row | None:
     selected = serialize_timeframes(tuple(timeframes))
+    _write_keyword_timeframes(conn, keyword_id, selected)
+    conn.commit()
+    return get_keyword(conn, keyword_id)
+
+
+def _write_keyword_timeframes(
+    conn: sqlite3.Connection,
+    keyword_id: int,
+    selected: str,
+) -> None:
     conn.execute(
         """
         UPDATE keywords
@@ -161,8 +188,97 @@ def update_keyword_timeframes(
         """,
         (keyword_id, selected),
     )
+
+
+def bulk_adjust_keyword_timeframes(
+    conn: sqlite3.Connection,
+    keyword_ids: Sequence[int],
+    timeframes: Sequence[str],
+    action: str,
+) -> int:
+    if action not in {"add", "remove"}:
+        raise ValueError("Invalid action.")
+
+    unique_ids = list(dict.fromkeys(keyword_ids))
+    selected_timeframes = [
+        timeframe
+        for timeframe in dict.fromkeys(timeframes)
+        if timeframe in AVAILABLE_TIMEFRAMES
+    ]
+    if not selected_timeframes:
+        raise ValueError("Please choose at least one valid timeframe.")
+
+    targets: list[tuple[int, str]] = []
+    for keyword_id in unique_ids:
+        keyword = get_keyword(conn, keyword_id)
+        if keyword is None:
+            continue
+        selected = list(keyword_timeframes(keyword))
+        if action == "add":
+            for timeframe in selected_timeframes:
+                if timeframe not in selected:
+                    selected.append(timeframe)
+        else:
+            selected = [item for item in selected if item not in selected_timeframes]
+        if not selected:
+            raise ValueError(f"Keyword {keyword['term']} must keep at least one timeframe.")
+        targets.append((keyword_id, serialize_timeframes(tuple(selected))))
+
+    if not targets:
+        return 0
+
+    conn.execute("BEGIN")
+    updated = 0
+    try:
+        for keyword_id, selected in targets:
+            _write_keyword_timeframes(conn, keyword_id, selected)
+            updated += 1
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return updated
+
+
+def update_keyword_gprops(
+    conn: sqlite3.Connection,
+    keyword_id: int,
+    gprops: Sequence[str],
+) -> sqlite3.Row | None:
+    selected = serialize_gprops(tuple(gprops))
+    conn.execute(
+        """
+        UPDATE keywords
+        SET gprop = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (selected, keyword_id),
+    )
+    conn.execute(
+        """
+        DELETE FROM collection_jobs
+        WHERE keyword_id = ?
+          AND status = 'queued'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM keywords k
+              WHERE k.id = ?
+                AND instr(',' || k.gprop || ',', ',' || collection_jobs.gprop || ',') > 0
+          )
+        """,
+        (keyword_id, keyword_id),
+    )
     conn.commit()
     return get_keyword(conn, keyword_id)
+
+
+def update_keyword_gprop(
+    conn: sqlite3.Connection,
+    keyword_id: int,
+    gprop: str,
+) -> sqlite3.Row | None:
+    return update_keyword_gprops(conn, keyword_id, (gprop,))
 
 
 def toggle_keyword(conn: sqlite3.Connection, keyword_id: int) -> None:
@@ -191,6 +307,7 @@ def create_collection_job(
     next_attempt_at: str | None = None,
     timeframe: str = "today 12-m",
     geo: str = "",
+    gprop: str = "",
 ) -> sqlite3.Row:
     existing = conn.execute(
         """
@@ -200,11 +317,12 @@ def create_collection_job(
         WHERE cj.keyword_id = ?
           AND cj.timeframe = ?
           AND cj.geo = ?
+          AND cj.gprop = ?
           AND cj.status IN ('queued', 'running')
         ORDER BY cj.created_at ASC, cj.id ASC
         LIMIT 1
         """,
-        (keyword_id, timeframe, geo),
+        (keyword_id, timeframe, geo, gprop),
     ).fetchone()
     if existing is not None:
         return existing
@@ -212,10 +330,10 @@ def create_collection_job(
     cursor = conn.execute(
         """
         INSERT INTO collection_jobs
-            (keyword_id, source, timeframe, geo, status, max_attempts, next_attempt_at)
-        VALUES (?, ?, ?, ?, 'queued', ?, ?)
+            (keyword_id, source, timeframe, geo, gprop, status, max_attempts, next_attempt_at)
+        VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)
         """,
-        (keyword_id, source, timeframe, geo, max_attempts, next_attempt_at),
+        (keyword_id, source, timeframe, geo, gprop, max_attempts, next_attempt_at),
     )
     conn.commit()
     return get_collection_job(conn, cursor.lastrowid)
@@ -231,20 +349,23 @@ def create_collection_jobs_for_enabled(
     jobs: list[sqlite3.Row] = []
     for keyword in list_enabled_keywords(conn):
         selected_timeframes = keyword_timeframes(keyword)
+        selected_gprops = keyword_gprops(keyword)
         requested_timeframes = timeframes or selected_timeframes
         for timeframe in requested_timeframes:
             if timeframe not in selected_timeframes:
                 continue
-            jobs.append(
-                create_collection_job(
-                    conn,
-                    keyword["id"],
-                    source,
-                    max_attempts,
-                    timeframe=timeframe,
-                    geo=geo,
+            for gprop in selected_gprops:
+                jobs.append(
+                    create_collection_job(
+                        conn,
+                        keyword["id"],
+                        source,
+                        max_attempts,
+                        timeframe=timeframe,
+                        geo=geo,
+                        gprop=gprop,
+                    )
                 )
-            )
     return jobs
 
 
@@ -275,6 +396,7 @@ def claim_next_collection_job(
         WHERE cj.status = 'queued'
           AND k.enabled = 1
           AND instr(',' || k.timeframes || ',', ',' || cj.timeframe || ',') > 0
+          AND instr(',' || k.gprop || ',', ',' || cj.gprop || ',') > 0
           AND (cj.next_attempt_at IS NULL OR cj.next_attempt_at <= ?)
         ORDER BY cj.created_at ASC, cj.id ASC
         LIMIT 1
@@ -304,11 +426,21 @@ def delete_unmonitored_queued_jobs(conn: sqlite3.Connection) -> int:
         """
         DELETE FROM collection_jobs
         WHERE status = 'queued'
-          AND EXISTS (
-              SELECT 1
-              FROM keywords k
-              WHERE k.id = collection_jobs.keyword_id
-                AND instr(',' || k.timeframes || ',', ',' || collection_jobs.timeframe || ',') = 0
+          AND (
+              NOT EXISTS (
+                  SELECT 1
+                  FROM keywords k
+                  WHERE k.id = collection_jobs.keyword_id
+              )
+              OR EXISTS (
+                  SELECT 1
+                  FROM keywords k
+                WHERE k.id = collection_jobs.keyword_id
+                AND (
+                    instr(',' || k.timeframes || ',', ',' || collection_jobs.timeframe || ',') = 0
+                    OR instr(',' || k.gprop || ',', ',' || collection_jobs.gprop || ',') = 0
+                )
+          )
           )
         """
     )
@@ -440,7 +572,14 @@ def list_collection_job_attempts(
     return list(
         conn.execute(
             """
-            SELECT *
+            SELECT
+                *,
+                CASE
+                    WHEN profile_key LIKE 'clash:%' THEN substr(profile_key, 7)
+                    WHEN proxy_name IS NOT NULL AND proxy_name != '' THEN proxy_name
+                    WHEN profile_key IS NOT NULL AND profile_key != '' THEN profile_key
+                    ELSE '-'
+                END AS display_proxy_name
             FROM collection_job_attempts
             WHERE job_id = ?
             ORDER BY attempt_no ASC, id ASC
@@ -481,6 +620,7 @@ def upsert_trend_points(
     keyword_id: int,
     points: Sequence[dict[str, object]],
     geo: str,
+    gprop: str,
     timeframe: str,
     collected_at: str,
 ) -> int:
@@ -489,9 +629,9 @@ def upsert_trend_points(
         conn.execute(
             """
             INSERT INTO trend_points
-                (keyword_id, point_date, value, is_partial, geo, timeframe, collected_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(keyword_id, point_date, geo, timeframe)
+                (keyword_id, point_date, value, is_partial, geo, gprop, timeframe, collected_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(keyword_id, point_date, geo, gprop, timeframe)
             DO UPDATE SET
                 value = excluded.value,
                 is_partial = excluded.is_partial,
@@ -503,6 +643,7 @@ def upsert_trend_points(
                 int(point["value"]),
                 1 if point.get("is_partial") else 0,
                 geo,
+                gprop,
                 timeframe,
                 collected_at,
             ),
@@ -517,20 +658,26 @@ def list_trend_points(
     keyword_id: int,
     limit: int | None = None,
     timeframe: str | None = None,
+    gprop: str | None = None,
 ) -> list[sqlite3.Row]:
     timeframe_filter = ""
+    gprop_filter = ""
     base_params: list[object] = [keyword_id]
     if timeframe is not None:
         timeframe_filter = "AND timeframe = ?"
         base_params.append(timeframe)
+    if gprop is not None:
+        gprop_filter = "AND gprop = ?"
+        base_params.append(gprop)
 
     sql = """
         SELECT *
         FROM trend_points
         WHERE keyword_id = ?
         {timeframe_filter}
+        {gprop_filter}
         ORDER BY point_date ASC
-    """.format(timeframe_filter=timeframe_filter)
+    """.format(timeframe_filter=timeframe_filter, gprop_filter=gprop_filter)
     params: tuple[object, ...] = tuple(base_params)
     if limit is not None:
         sql = """
@@ -540,11 +687,12 @@ def list_trend_points(
                 FROM trend_points
                 WHERE keyword_id = ?
                 {timeframe_filter}
+                {gprop_filter}
                 ORDER BY point_date DESC
                 LIMIT ?
             )
             ORDER BY point_date ASC
-        """.format(timeframe_filter=timeframe_filter)
+        """.format(timeframe_filter=timeframe_filter, gprop_filter=gprop_filter)
         params = tuple([*base_params, limit])
     return list(conn.execute(sql, params))
 
@@ -598,6 +746,7 @@ def insert_alert(
     severity: str = "P2",
     category: str = "trend_change",
     timeframe: str = "today 12-m",
+    gprop: str = "",
     current_value: float | None = None,
     baseline_value: float | None = None,
     change_pct: float | None = None,
@@ -605,10 +754,10 @@ def insert_alert(
     cursor = conn.execute(
         """
         INSERT OR IGNORE INTO alerts (
-            keyword_id, rule, severity, category, timeframe, point_date,
+            keyword_id, rule, severity, category, timeframe, gprop, point_date,
             current_value, baseline_value, change_pct, message
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             keyword_id,
@@ -616,6 +765,7 @@ def insert_alert(
             severity,
             category,
             timeframe,
+            gprop,
             point_date,
             current_value,
             baseline_value,
@@ -633,6 +783,7 @@ def has_recent_alert(
     severity: str,
     category: str,
     timeframe: str,
+    gprop: str,
     created_after: str,
 ) -> bool:
     row = conn.execute(
@@ -643,10 +794,11 @@ def has_recent_alert(
           AND severity = ?
           AND category = ?
           AND timeframe = ?
+          AND gprop = ?
           AND created_at >= ?
         LIMIT 1
         """,
-        (keyword_id, severity, category, timeframe, created_after),
+        (keyword_id, severity, category, timeframe, gprop, created_after),
     ).fetchone()
     return row is not None
 

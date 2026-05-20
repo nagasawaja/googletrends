@@ -5,16 +5,29 @@
   <div>
     <h1>{{ keyword.term }}</h1>
     <p>全球范围，当前查看 {{ timeframe }}。数值为 Google Trends 0-100 归一化指数。</p>
+    <p>搜索来源：{{ view_gprop_label }}</p>
     <p>已启用周期：{{ selected_timeframes|join(", ") }}</p>
   </div>
   <form method="post" action="/keywords/{{ keyword.id }}/collect">
+    <input type="hidden" name="next_url" value="/keywords/{{ keyword.id }}?timeframe={{ timeframe }}&gprop={{ view_gprop }}">
     <button class="button primary" type="submit">创建全部周期任务</button>
   </form>
 </section>
 
 <section class="filters">
   {% for option in timeframes %}
-    <a class="{{ 'active' if option == timeframe else '' }}" href="/keywords/{{ keyword.id }}?timeframe={{ option }}">{{ option }}</a>
+    <a class="{{ 'active' if option == timeframe else '' }}" href="/keywords/{{ keyword.id }}?timeframe={{ option }}&gprop={{ view_gprop }}">{{ option }}</a>
+  {% endfor %}
+</section>
+
+<section class="filters">
+  {% for option in search_property_options %}
+    {% if option.value in selected_gprops %}
+      <a
+        class="{{ 'active' if option.value == view_gprop else '' }}"
+        href="/keywords/{{ keyword.id }}?timeframe={{ timeframe }}&gprop={{ option.value }}"
+      >{{ option.label }}</a>
+    {% endif %}
   {% endfor %}
 </section>
 
@@ -24,8 +37,10 @@
       <svg class="chart" viewBox="0 0 {{ chart.width }} {{ chart.height }}" preserveAspectRatio="none" role="img" aria-label="{{ keyword.term }} trend chart">
         <line x1="32" y1="20" x2="32" y2="260" class="axis"></line>
         <line x1="32" y1="260" x2="868" y2="260" class="axis"></line>
-        <line x1="32" y1="140" x2="868" y2="140" class="grid"></line>
-        <line x1="32" y1="20" x2="868" y2="20" class="grid"></line>
+        {% for tick in chart.y_ticks %}
+          <line x1="32" y1="{{ tick.y }}" x2="868" y2="{{ tick.y }}" class="grid"></line>
+          <text x="22" y="{{ tick.y + 4 }}" class="axis-label axis-label-y" text-anchor="end">{{ tick.label }}</text>
+        {% endfor %}
         <line x1="32" y1="20" x2="32" y2="260" class="chart-crosshair"></line>
         <path d="{{ chart.path }}" class="trend-line"></path>
         {% for point in chart.points %}
@@ -34,15 +49,37 @@
             <circle cx="{{ point.x }}" cy="{{ point.y }}" r="13" class="trend-hover-target"></circle>
           </g>
         {% endfor %}
-        <text x="4" y="24" class="axis-label">100</text>
-        <text x="12" y="144" class="axis-label">50</text>
-        <text x="20" y="264" class="axis-label">0</text>
+        {% for tick in chart.x_ticks %}
+          <line x1="{{ tick.x }}" y1="260" x2="{{ tick.x }}" y2="266" class="axis-tick"></line>
+          <text x="{{ tick.x }}" y="276" class="axis-label axis-label-x" text-anchor="{{ tick.anchor }}">{{ tick.label }}</text>
+        {% endfor %}
       </svg>
       <div class="chart-tooltip" aria-hidden="true"></div>
     </div>
   {% else %}
     <div class="empty">还没有趋势数据，点击“创建全部周期任务”开始。</div>
   {% endif %}
+</section>
+
+<section class="panel">
+  <h2>管理搜索来源</h2>
+  <form class="inline-form" method="post" action="/keywords/{{ keyword.id }}/gprops">
+    <input type="hidden" name="next_url" value="/keywords/{{ keyword.id }}?timeframe={{ timeframe }}&gprop={{ view_gprop }}">
+    <div class="timeframe-options source-options">
+      {% for option in search_property_options %}
+        <label class="checkbox-option">
+          <input
+            type="checkbox"
+            name="gprops"
+            value="{{ option.value }}"
+            {% if option.value in selected_gprops %}checked{% endif %}
+          >
+          <span>{{ option.label }}</span>
+        </label>
+      {% endfor %}
+    </div>
+    <button class="button" type="submit">保存来源</button>
+  </form>
 </section>
 
 <section class="grid-two">
@@ -116,7 +153,7 @@
   <details class="timeframe-settings">
     <summary>管理监控周期</summary>
     <form class="timeframe-form timeframe-settings-form" method="post" action="/keywords/{{ keyword.id }}/timeframes">
-      <input type="hidden" name="next_url" value="/keywords/{{ keyword.id }}?timeframe={{ timeframe }}">
+      <input type="hidden" name="next_url" value="/keywords/{{ keyword.id }}?timeframe={{ timeframe }}&gprop={{ view_gprop }}">
       {% set selected_timeframes = "," ~ keyword.timeframes ~ "," %}
       <div class="timeframe-options">
         {% for item in timeframes %}

@@ -186,6 +186,7 @@ class FailingThenSuccessfulProvider(PytrendsProvider):
         term: str,
         timeframe: str = "now 7-d",
         geo: str = "",
+        gprop: str = "",
         profile_key: str | None = None,
     ) -> list[TrendPoint]:
         self.calls += 1

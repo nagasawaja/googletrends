@@ -23,6 +23,7 @@
         <th>ID</th>
         <th>关键词</th>
         <th>来源</th>
+        <th>搜索来源</th>
         <th>周期</th>
         <th>创建时间</th>
         <th>开始时间</th>
@@ -40,6 +41,7 @@
           <td>#{{ run.id }}</td>
           <td>{{ run.term or "已删除" }}</td>
           <td>{{ "定时" if run.source.startswith("scheduled") else "手动" }}</td>
+          <td>{{ run.gprop_label }}</td>
           <td>{{ run.timeframe }}</td>
           <td>{{ run.created_at|bjtime }}</td>
           <td>{{ run.started_at|bjtime }}</td>
@@ -65,7 +67,7 @@
         {% set attempt_rows = attempts_by_job_id.get(run.id, []) %}
         {% if run.attempts > 1 and attempt_rows %}
           <tr class="attempt-detail-row">
-            <td colspan="12">
+            <td colspan="13">
               <div class="attempt-details">
                 <div class="attempt-details-head">
                   <strong>失败明细</strong>
@@ -85,7 +87,7 @@
                       <tr>
                         <td>第 {{ attempt.attempt_no }} 次</td>
                         <td>{{ attempt.finished_at|bjtime }}</td>
-                        <td>{{ attempt.proxy_name or "-" }}</td>
+                        <td>{{ attempt.display_proxy_name or attempt.proxy_name or "-" }}</td>
                         <td class="error-text">{{ attempt.error or "" }}</td>
                       </tr>
                     {% endfor %}
@@ -96,7 +98,7 @@
           </tr>
         {% endif %}
       {% else %}
-        <tr><td colspan="12" class="empty">暂无采集任务。</td></tr>
+        <tr><td colspan="13" class="empty">暂无采集任务。</td></tr>
       {% endfor %}
     </tbody>
   </table>

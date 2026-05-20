@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Request
@@ -21,17 +22,30 @@ from .proxy_check import build_proxy_runtime_status, rotate_clash_proxy, run_pro
 from .proxy_pool import build_proxy_pool
 from .request_profiles import build_request_profile_pool
 from .settings import load_settings
-from .time_utils import format_beijing
+from .time_utils import format_beijing, parse_datetime_text
 from .trends import (
     AVAILABLE_TIMEFRAMES,
     CONTEXT_TIMEFRAMES,
-    DEFAULT_GEO,
+    DEFAULT_GPROP,
+    LONG_TIMEFRAMES,
+    MID_TIMEFRAMES,
     MONITORED_TIMEFRAMES,
     NOW_TIMEFRAMES,
     PytrendsProvider,
     SHORT_TIMEFRAME,
     TrendsProvider,
 )
+
+SEARCH_PROPERTY_OPTIONS = (
+    {"value": DEFAULT_GPROP, "label": "网页搜索"},
+    {"value": "youtube", "label": "YouTube"},
+    {"value": "news", "label": "新闻"},
+    {"value": "images", "label": "图片"},
+    {"value": "froogle", "label": "Shopping"},
+)
+SEARCH_PROPERTY_LABELS = {
+    item["value"]: item["label"] for item in SEARCH_PROPERTY_OPTIONS
+}
 
 APP_DIR = Path(__file__).parent
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
@@ -247,15 +261,22 @@ def rotate_clash_proxy_page(request: Request) -> HTMLResponse:
 def index(
     request: Request,
     conn: sqlite3.Connection = Depends(get_db),
+    edit: bool = False,
     error: str | None = None,
     message: str | None = None,
 ) -> HTMLResponse:
+    edit_toggle_url = "/?edit=1" if not edit else "/"
+    bulk_next_url = "/?edit=1"
     return templates.TemplateResponse(
         request=request,
         name="index.html",
         context={
             "request": request,
             "keyword_items": build_keyword_list_items(conn, repository.list_keywords(conn)),
+            "available_timeframes": AVAILABLE_TIMEFRAMES,
+            "edit_mode": edit,
+            "edit_toggle_url": edit_toggle_url,
+            "bulk_next_url": bulk_next_url,
             "error": error,
             "message": message,
         },
@@ -323,6 +344,89 @@ async def update_keyword_timeframes(
     return redirect(target, message="Keyword timeframes updated.")
 
 
+@router.post("/keywords/timeframes/bulk")
+async def bulk_update_keyword_timeframes(
+    request: Request,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    form = await request.form()
+    keyword_ids = []
+    for value in form.getlist("keyword_ids"):
+        if isinstance(value, str) and value.isdigit():
+            keyword_ids.append(int(value))
+    action = form.get("action")
+    if not keyword_ids:
+        return redirect("/", error="Please select at least one keyword.")
+    timeframes = [
+        value
+        for value in form.getlist("timeframes")
+        if isinstance(value, str) and value in AVAILABLE_TIMEFRAMES
+    ]
+    if not timeframes:
+        return redirect("/", error="Please choose at least one valid timeframe.")
+    if action not in {"add", "remove"}:
+        return redirect("/", error="Please choose add or remove.")
+    try:
+        updated = repository.bulk_adjust_keyword_timeframes(conn, keyword_ids, timeframes, action)
+    except ValueError as exc:
+        return redirect("/", error=str(exc))
+    verb = "added to" if action == "add" else "removed from"
+    next_url = form.get("next_url")
+    target = (
+        str(next_url)
+        if isinstance(next_url, str) and next_url.startswith("/") and not next_url.startswith("//")
+        else "/"
+    )
+    return redirect(
+        target,
+        message=f"{', '.join(timeframes)} {verb} {updated} keyword(s).",
+    )
+
+
+@router.post("/keywords/{keyword_id}/gprops")
+async def update_keyword_gprops(
+    keyword_id: int,
+    request: Request,
+    conn: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    ensure_keyword(conn, keyword_id)
+    form = await request.form()
+    selected = [
+        value
+        for value in form.getlist("gprops")
+        if isinstance(value, str) and value in {option["value"] for option in SEARCH_PROPERTY_OPTIONS}
+    ]
+    if not selected:
+        return redirect(f"/keywords/{keyword_id}", error="At least one source type must be selected.")
+    repository.update_keyword_gprops(conn, keyword_id, selected)
+    next_url = form.get("next_url")
+    target = (
+        str(next_url)
+        if isinstance(next_url, str) and next_url.startswith("/") and not next_url.startswith("//")
+        else f"/keywords/{keyword_id}"
+    )
+    return redirect(target, message="Keyword search sources updated.")
+
+
+@router.post("/keywords/{keyword_id}/gprop")
+def update_keyword_gprop(
+    keyword_id: int,
+    gprop: str = Form(DEFAULT_GPROP),
+    next_url: str | None = Form(None),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> RedirectResponse:
+    ensure_keyword(conn, keyword_id)
+    updated = repository.update_keyword_gprops(conn, keyword_id, (gprop,))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Keyword not found.")
+    target = (
+        str(next_url)
+        if isinstance(next_url, str) and next_url.startswith("/") and not next_url.startswith("//")
+        else f"/keywords/{keyword_id}"
+    )
+    return redirect(target, message="Keyword search property updated.")
+
+
 @router.post("/keywords/{keyword_id}/delete")
 def delete_keyword(
     keyword_id: int,
@@ -339,11 +443,19 @@ def keyword_detail(
     request: Request,
     conn: sqlite3.Connection = Depends(get_db),
     timeframe: str = SHORT_TIMEFRAME,
+    gprop: str | None = None,
 ) -> HTMLResponse:
     keyword = ensure_keyword(conn, keyword_id)
     if timeframe not in AVAILABLE_TIMEFRAMES:
         timeframe = SHORT_TIMEFRAME
-    points = repository.list_trend_points(conn, keyword_id, timeframe=timeframe)
+    selected_gprops = repository.keyword_gprops(keyword)
+    view_gprop = gprop if gprop in selected_gprops else selected_gprops[0]
+    points = repository.list_trend_points(
+        conn,
+        keyword_id,
+        timeframe=timeframe,
+        gprop=view_gprop,
+    )
     chart = build_chart(points)
     runs = [
         run for run in repository.list_jobs(conn, limit=25) if run["keyword_id"] == keyword_id
@@ -356,9 +468,13 @@ def keyword_detail(
             "keyword": keyword,
             "points": points,
             "chart": chart,
+            "selected_gprops": selected_gprops,
+            "view_gprop": view_gprop,
+            "view_gprop_label": SEARCH_PROPERTY_LABELS.get(view_gprop, view_gprop or "网页搜索"),
             "runs": runs,
             "timeframe": timeframe,
             "timeframes": AVAILABLE_TIMEFRAMES,
+            "search_property_options": SEARCH_PROPERTY_OPTIONS,
             "selected_timeframes": repository.keyword_timeframes(keyword),
         },
     )
@@ -368,23 +484,33 @@ def keyword_detail(
 def collect_one(
     keyword_id: int,
     request: Request,
+    next_url: str | None = Form(None),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> RedirectResponse:
     keyword = ensure_keyword(conn, keyword_id)
     selected_timeframes = repository.keyword_timeframes(keyword)
+    selected_gprops = repository.keyword_gprops(keyword)
+    selected_gprop_labels = [
+        SEARCH_PROPERTY_LABELS.get(item, item or "网页搜索") for item in selected_gprops
+    ]
     jobs = collector.enqueue_keyword_jobs(
         conn,
         keyword_id=keyword_id,
         source="manual",
         max_attempts=request.app.state.max_attempts,
         timeframes=selected_timeframes,
+        gprops=selected_gprops,
     )
     worker.start_worker(request.app)
     return redirect(
-        f"/keywords/{keyword_id}",
+        (
+            str(next_url)
+            if isinstance(next_url, str) and next_url.startswith("/") and not next_url.startswith("//")
+            else f"/keywords/{keyword_id}"
+        ),
         message=(
             f"Queued {len(jobs)} collection jobs for: "
-            f"{', '.join(selected_timeframes)}."
+            f"{', '.join(selected_timeframes)} x {', '.join(selected_gprop_labels)}."
         ),
     )
 
@@ -414,7 +540,12 @@ def runs(
     message: str | None = None,
     status: str | None = None,
 ) -> HTMLResponse:
-    runs = repository.list_jobs(conn, status=status)
+    runs = []
+    for run in repository.list_jobs(conn, status=status):
+        run_gprop = run["gprop"] if "gprop" in run.keys() else DEFAULT_GPROP
+        run_row = dict(run)
+        run_row["gprop_label"] = SEARCH_PROPERTY_LABELS.get(run_gprop, run_gprop or "网页搜索")
+        runs.append(run_row)
     attempts_by_job_id = {
         run["id"]: repository.list_collection_job_attempts(conn, run["id"])
         for run in runs
@@ -511,15 +642,24 @@ def ensure_keyword(conn: sqlite3.Connection, keyword_id: int) -> sqlite3.Row:
 
 
 def redirect(path: str, message: str | None = None, error: str | None = None) -> RedirectResponse:
-    params = []
+    params: list[tuple[str, str]] = []
     if message:
         params.append(("message", message))
     if error:
         params.append(("error", error))
     if params:
-        from urllib.parse import urlencode
-
-        path = f"{path}?{urlencode(params)}"
+        parsed = urlsplit(path)
+        query = list(parse_qsl(parsed.query, keep_blank_values=True))
+        query.extend(params)
+        path = urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                urlencode(query),
+                parsed.fragment,
+            )
+        )
     return RedirectResponse(path, status_code=303)
 
 
@@ -561,12 +701,15 @@ def build_chart_with_size(
             "height": height,
             "path": "",
             "points": [],
+            "x_ticks": [],
+            "y_ticks": [],
             "point_radius": 2.6,
         }
 
     usable_width = width - (padding_x * 2)
     usable_height = height - (padding_y * 2)
     max_index = max(len(points) - 1, 1)
+    timeframe = str(points[0]["timeframe"]) if points else None
     coords: list[dict[str, object]] = []
     for index, point in enumerate(points):
         value = int(point["value"])
@@ -583,6 +726,8 @@ def build_chart_with_size(
                 ),
             }
         )
+    x_ticks = build_chart_x_ticks(points, coords, timeframe=timeframe)
+    y_ticks = build_chart_y_ticks(height, padding_y)
     path = " ".join(
         f"{'M' if index == 0 else 'L'} {coord['x']} {coord['y']}"
         for index, coord in enumerate(coords)
@@ -596,8 +741,81 @@ def build_chart_with_size(
         "height": height,
         "path": path,
         "points": coords,
+        "x_ticks": x_ticks,
+        "y_ticks": y_ticks,
         "point_radius": point_radius,
     }
+
+
+def build_chart_y_ticks(
+    height: int,
+    padding_y: int,
+) -> list[dict[str, object]]:
+    usable_height = height - (padding_y * 2)
+    return [
+        {
+            "value": value,
+            "y": round(padding_y + usable_height - (usable_height * value / 100), 2),
+            "label": str(value),
+        }
+        for value in (100, 75, 50, 25, 0)
+    ]
+
+
+def build_chart_x_ticks(
+    points: list[sqlite3.Row],
+    coords: list[dict[str, object]],
+    timeframe: str | None,
+) -> list[dict[str, object]]:
+    if not points or not coords:
+        return []
+
+    tick_indexes = select_tick_indexes(len(points), max_ticks=5)
+    ticks: list[dict[str, object]] = []
+    for position, index in enumerate(tick_indexes):
+        coord = coords[index]
+        anchor = "middle"
+        if len(tick_indexes) > 1:
+            if position == 0:
+                anchor = "start"
+            elif position == len(tick_indexes) - 1:
+                anchor = "end"
+        ticks.append(
+            {
+                "x": coord["x"],
+                "label": format_chart_axis_label(points[index]["point_date"], timeframe),
+                "anchor": anchor,
+            }
+        )
+    return ticks
+
+
+def select_tick_indexes(total: int, max_ticks: int) -> list[int]:
+    if total <= 0:
+        return []
+    if total <= max_ticks:
+        return list(range(total))
+    if max_ticks <= 1:
+        return [0]
+    return sorted(
+        {
+            round(index * (total - 1) / (max_ticks - 1))
+            for index in range(max_ticks)
+        }
+    )
+
+
+def format_chart_axis_label(value: object, timeframe: str | None) -> str:
+    parsed = parse_datetime_text(str(value), timeframe=timeframe)
+    if timeframe == "now 1-d":
+        return parsed.strftime("%H:%M")
+    if timeframe in NOW_TIMEFRAMES:
+        return parsed.strftime("%m-%d")
+    if timeframe in MID_TIMEFRAMES:
+        return parsed.strftime("%m-%d")
+    if timeframe in LONG_TIMEFRAMES:
+        return parsed.strftime("%Y-%m")
+    return parsed.strftime("%Y-%m-%d")
 
 
 def build_keyword_list_items(
@@ -606,6 +824,9 @@ def build_keyword_list_items(
 ) -> list[dict[str, object]]:
     items: list[dict[str, object]] = []
     for keyword in keywords:
+        keyword_gprops = repository.keyword_gprops(keyword)
+        keyword_timeframes = repository.keyword_timeframes(keyword)
+        preview_gprop = keyword_gprops[0]
         timeframe, points = select_preview_points(conn, keyword)
         chart = build_chart_with_size(
             points,
@@ -618,6 +839,22 @@ def build_keyword_list_items(
             {
                 "keyword": keyword,
                 "preview_timeframe": timeframe,
+                "preview_gprop": preview_gprop,
+                "preview_gprop_label": " / ".join(
+                    SEARCH_PROPERTY_LABELS.get(item, item or "网页搜索")
+                    for item in keyword_gprops
+                ),
+                "preview_gprops": keyword_gprops,
+                "preview_gprop_labels": [
+                    SEARCH_PROPERTY_LABELS.get(item, item or "网页搜索")
+                    for item in keyword_gprops
+                ],
+                "preview_gprop_view_label": SEARCH_PROPERTY_LABELS.get(
+                    preview_gprop,
+                    preview_gprop or "网页搜索",
+                ),
+                "selected_timeframes": keyword_timeframes,
+                "selected_timeframes_text": "，".join(keyword_timeframes),
                 "preview_points": points,
                 "preview_latest": points[-1] if points else None,
                 "chart": chart,
@@ -636,11 +873,13 @@ def select_preview_points(
         ordered_timeframes = list(MONITORED_TIMEFRAMES)
 
     timeframe = ordered_timeframes[0]
+    keyword_gprops = repository.keyword_gprops(keyword)
     points = repository.list_trend_points(
         conn,
         keyword["id"],
         limit=80,
         timeframe=timeframe,
+        gprop=keyword_gprops[0],
     )
     return timeframe, points
 

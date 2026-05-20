@@ -13,6 +13,7 @@ from .notifier import Notifier, NullNotifier
 from .time_utils import format_beijing
 from .trends import (
     DEFAULT_GEO,
+    DEFAULT_GPROP,
     DEFAULT_TIMEFRAME,
     LONG_TIMEFRAMES,
     MID_TIMEFRAMES,
@@ -27,6 +28,7 @@ DEFAULT_P2_ALERT_COOLDOWN_HOURS = 24
 DEFAULT_RETRY_DELAY_SECONDS = 5
 RATE_LIMIT_RETRY_SECONDS = 5
 DEFAULT_MAX_ATTEMPTS = 5
+DEFAULT_STALE_RUNNING_MINUTES = 30
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,7 @@ def collect_keyword(
     provider: TrendsProvider,
     timeframe: str = DEFAULT_TIMEFRAME,
     geo: str = DEFAULT_GEO,
+    gprop: str = DEFAULT_GPROP,
 ) -> dict[str, object]:
     keyword = repository.get_keyword(conn, keyword_id)
     if keyword is None:
@@ -65,13 +68,24 @@ def collect_keyword(
     run = repository.create_run(conn, keyword_id, started_at)
 
     try:
-        points = provider.collect_keyword(keyword["term"], timeframe=timeframe, geo=geo)
+        points = provider.collect_keyword(
+            keyword["term"],
+            timeframe=timeframe,
+            geo=geo,
+            gprop=gprop,
+        )
         collected_at = utc_now()
         records = [point.as_record() for point in points]
         count = repository.upsert_trend_points(
-            conn, keyword_id, records, geo=geo, timeframe=timeframe, collected_at=collected_at
+            conn,
+            keyword_id,
+            records,
+            geo=geo,
+            gprop=gprop,
+            timeframe=timeframe,
+            collected_at=collected_at,
         )
-        alerts = evaluate_alerts(conn, keyword_id, timeframe=timeframe)
+        alerts = evaluate_alerts(conn, keyword_id, timeframe=timeframe, gprop=gprop)
         repository.finish_run(
             conn,
             run["id"],
@@ -112,7 +126,17 @@ def collect_all_enabled(
 ) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
     for keyword in repository.list_enabled_keywords(conn):
-        results.append(collect_keyword(conn, keyword["id"], provider, timeframe, geo))
+        for gprop in repository.keyword_gprops(keyword):
+            results.append(
+                collect_keyword(
+                    conn,
+                    keyword["id"],
+                    provider,
+                    timeframe,
+                    geo,
+                    gprop=gprop,
+                )
+            )
     return results
 
 
@@ -134,6 +158,7 @@ def enqueue_keyword_job(
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     timeframe: str = DEFAULT_TIMEFRAME,
     geo: str = DEFAULT_GEO,
+    gprop: str = DEFAULT_GPROP,
 ) -> sqlite3.Row:
     return repository.create_collection_job(
         conn,
@@ -142,6 +167,7 @@ def enqueue_keyword_job(
         max_attempts=max_attempts,
         timeframe=timeframe,
         geo=geo,
+        gprop=gprop,
     )
 
 
@@ -152,6 +178,7 @@ def enqueue_keyword_jobs(
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     timeframes: tuple[str, ...] | None = None,
     geo: str = DEFAULT_GEO,
+    gprops: tuple[str, ...] | None = None,
 ) -> list[sqlite3.Row]:
     selected_timeframes = timeframes
     if selected_timeframes is None:
@@ -159,6 +186,12 @@ def enqueue_keyword_jobs(
         if keyword is None:
             raise LookupError(f"Keyword id {keyword_id} was not found.")
         selected_timeframes = repository.keyword_timeframes(keyword)
+    selected_gprops = gprops
+    if selected_gprops is None:
+        keyword = repository.get_keyword(conn, keyword_id)
+        if keyword is None:
+            raise LookupError(f"Keyword id {keyword_id} was not found.")
+        selected_gprops = repository.keyword_gprops(keyword)
     return [
         enqueue_keyword_job(
             conn,
@@ -167,8 +200,10 @@ def enqueue_keyword_jobs(
             max_attempts=max_attempts,
             timeframe=timeframe,
             geo=geo,
+            gprop=gprop,
         )
         for timeframe in selected_timeframes
+        for gprop in selected_gprops
     ]
 
 
@@ -220,9 +255,16 @@ def process_due_jobs(
     public_base_url: str | None = DEFAULT_PUBLIC_BASE_URL,
     p1_alert_cooldown_hours: int = DEFAULT_P1_ALERT_COOLDOWN_HOURS,
     p2_alert_cooldown_hours: int = DEFAULT_P2_ALERT_COOLDOWN_HOURS,
+    stale_running_minutes: int | None = DEFAULT_STALE_RUNNING_MINUTES,
 ) -> list[dict[str, object]]:
     active_notifier = notifier or NullNotifier()
     results: list[dict[str, object]] = []
+    if stale_running_minutes is not None:
+        stale_before = (
+            datetime.now(timezone.utc) - timedelta(minutes=stale_running_minutes)
+        ).isoformat(timespec="seconds")
+        repository.requeue_stale_running_jobs(conn, stale_before)
+        repository.delete_unmonitored_queued_jobs(conn)
 
     while max_jobs is None or len(results) < max_jobs:
         job = repository.claim_next_collection_job(conn, utc_now())
@@ -262,6 +304,7 @@ def process_due_jobs_for_path(
     public_base_url: str | None = DEFAULT_PUBLIC_BASE_URL,
     p1_alert_cooldown_hours: int = DEFAULT_P1_ALERT_COOLDOWN_HOURS,
     p2_alert_cooldown_hours: int = DEFAULT_P2_ALERT_COOLDOWN_HOURS,
+    stale_running_minutes: int | None = DEFAULT_STALE_RUNNING_MINUTES,
 ) -> list[dict[str, object]]:
     initialize_database(db_path)
     with connect(db_path) as conn:
@@ -277,6 +320,7 @@ def process_due_jobs_for_path(
             public_base_url=public_base_url,
             p1_alert_cooldown_hours=p1_alert_cooldown_hours,
             p2_alert_cooldown_hours=p2_alert_cooldown_hours,
+            stale_running_minutes=stale_running_minutes,
         )
 
 
@@ -298,7 +342,13 @@ def process_collection_job(
     try:
         job_timeframe = job["timeframe"] or timeframe
         job_geo = job["geo"] if "geo" in job.keys() else geo
-        points = provider.collect_keyword(term, timeframe=job_timeframe, geo=job_geo)
+        job_gprop = job["gprop"] if "gprop" in job.keys() else DEFAULT_GPROP
+        points = provider.collect_keyword(
+            term,
+            timeframe=job_timeframe,
+            geo=job_geo,
+            gprop=job_gprop,
+        )
         collected_at = utc_now()
         records = [point.as_record() for point in points]
         count = repository.upsert_trend_points(
@@ -306,6 +356,7 @@ def process_collection_job(
             keyword_id,
             records,
             geo=job_geo,
+            gprop=job_gprop,
             timeframe=job_timeframe,
             collected_at=collected_at,
         )
@@ -313,6 +364,7 @@ def process_collection_job(
             conn,
             keyword_id,
             timeframe=job_timeframe,
+            gprop=job_gprop,
             p1_alert_cooldown_hours=p1_alert_cooldown_hours,
             p2_alert_cooldown_hours=p2_alert_cooldown_hours,
         )
@@ -331,6 +383,7 @@ def process_collection_job(
                     alert,
                     keyword_id=keyword_id,
                     public_base_url=public_base_url,
+                    gprop=job_gprop,
                 )
             )
         return {
@@ -338,6 +391,7 @@ def process_collection_job(
             "keyword_id": keyword_id,
             "term": term,
             "timeframe": job_timeframe,
+            "gprop": job_gprop,
             "status": "success",
             "points_collected": count,
             "alert_created": bool(alerts),
@@ -346,18 +400,21 @@ def process_collection_job(
     except Exception as exc:
         raw_error = str(exc)
         error = format_collection_error(raw_error)
-        repository.record_collection_job_attempt(
-            conn,
-            job_id=job["id"],
-            attempt_no=job["attempts"],
-            finished_at=utc_now(),
-            status="failed",
-            proxy_name=provider_last_proxy_name(provider),
-            proxy_url=provider_last_proxy_url(provider),
-            profile_key=provider_last_profile_key(provider),
-            error=error,
-            started_at=job["started_at"] if "started_at" in job.keys() else None,
-        )
+        try:
+            repository.record_collection_job_attempt(
+                conn,
+                job_id=job["id"],
+                attempt_no=job["attempts"],
+                finished_at=utc_now(),
+                status="failed",
+                proxy_name=provider_last_proxy_name(provider),
+                proxy_url=provider_last_proxy_url(provider),
+                profile_key=provider_last_profile_key(provider),
+                error=error,
+                started_at=job["started_at"] if "started_at" in job.keys() else None,
+            )
+        except Exception as attempt_exc:
+            error = f"{error} (failed to record attempt: {attempt_exc})"
         if job["attempts"] < job["max_attempts"]:
             retry_seconds = next_retry_delay_seconds(
                 raw_error=raw_error,
@@ -378,6 +435,7 @@ def process_collection_job(
                 "keyword_id": keyword_id,
                 "term": term,
                 "status": "queued",
+                "gprop": job_gprop,
                 "error": error,
                 "next_attempt_at": next_attempt_at,
                 "retry_delay_seconds": retry_seconds,
@@ -396,6 +454,7 @@ def process_collection_job(
             "job_id": job["id"],
             "keyword_id": keyword_id,
             "term": term,
+            "gprop": job_gprop,
             "status": "failed",
             "error": error,
         }
@@ -439,10 +498,11 @@ def evaluate_alerts(
     conn: sqlite3.Connection,
     keyword_id: int,
     timeframe: str = DEFAULT_TIMEFRAME,
+    gprop: str = DEFAULT_GPROP,
     p1_alert_cooldown_hours: int = DEFAULT_P1_ALERT_COOLDOWN_HOURS,
     p2_alert_cooldown_hours: int = DEFAULT_P2_ALERT_COOLDOWN_HOURS,
 ) -> list[AlertDecision]:
-    raw_points = repository.list_trend_points(conn, keyword_id, timeframe=timeframe)
+    raw_points = repository.list_trend_points(conn, keyword_id, timeframe=timeframe, gprop=gprop)
     points = normalized_alert_points(raw_points, timeframe)
     candidates = build_alert_candidates(points, timeframe)
     created_alerts: list[AlertDecision] = []
@@ -452,6 +512,7 @@ def evaluate_alerts(
             conn,
             keyword_id,
             alert,
+            gprop=gprop,
             p1_alert_cooldown_hours=p1_alert_cooldown_hours,
             p2_alert_cooldown_hours=p2_alert_cooldown_hours,
         ):
@@ -463,6 +524,7 @@ def evaluate_alerts(
             severity=alert.severity,
             category=alert.category,
             timeframe=alert.timeframe,
+            gprop=gprop,
             point_date=alert.point_date,
             current_value=alert.current_value,
             baseline_value=alert.baseline_value,
@@ -479,6 +541,7 @@ def is_alert_in_cooldown(
     conn: sqlite3.Connection,
     keyword_id: int,
     alert: AlertDecision,
+    gprop: str = DEFAULT_GPROP,
     p1_alert_cooldown_hours: int = DEFAULT_P1_ALERT_COOLDOWN_HOURS,
     p2_alert_cooldown_hours: int = DEFAULT_P2_ALERT_COOLDOWN_HOURS,
 ) -> bool:
@@ -499,6 +562,7 @@ def is_alert_in_cooldown(
         severity=alert.severity,
         category=alert.category,
         timeframe=alert.timeframe,
+        gprop=gprop,
         created_after=created_after,
     )
 
@@ -781,6 +845,7 @@ def format_alert_notification(
     alert: AlertDecision,
     keyword_id: int | None = None,
     public_base_url: str | None = DEFAULT_PUBLIC_BASE_URL,
+    gprop: str = DEFAULT_GPROP,
 ) -> str:
     change = "N/A" if alert.change_pct is None else f"{alert.change_pct:+.1f}%"
     point_date = format_beijing(alert.point_date, timeframe=alert.timeframe)
@@ -797,7 +862,12 @@ def format_alert_notification(
         f"说明: {alert.message}",
         f"建议动作: {suggested_action(alert)}",
     ]
-    keyword_url = build_keyword_url(public_base_url, keyword_id, alert.timeframe)
+    keyword_url = build_keyword_url(
+        public_base_url,
+        keyword_id,
+        alert.timeframe,
+        gprop=gprop,
+    )
     if keyword_url:
         lines.append(f"页面: {keyword_url}")
     return "\n".join(lines)
@@ -816,13 +886,14 @@ def build_keyword_url(
     public_base_url: str | None,
     keyword_id: int | None,
     timeframe: str,
+    gprop: str = DEFAULT_GPROP,
 ) -> str | None:
     if not public_base_url or keyword_id is None:
         return None
-    return (
-        f"{public_base_url.rstrip('/')}/keywords/{keyword_id}"
-        f"?timeframe={quote(timeframe, safe='')}"
-    )
+    query = f"timeframe={quote(timeframe, safe='')}"
+    if gprop:
+        query = f"{query}&gprop={quote(gprop, safe='')}"
+    return f"{public_base_url.rstrip('/')}/keywords/{keyword_id}?{query}"
 
 
 def suggested_action(alert: AlertDecision) -> str:

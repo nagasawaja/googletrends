@@ -32,7 +32,7 @@ def test_pytrends_provider_passes_browser_profile_headers(monkeypatch) -> None:
         def __init__(self, **kwargs) -> None:
             captured_kwargs.append(kwargs)
 
-        def build_payload(self, kw_list, timeframe: str, geo: str) -> None:
+        def build_payload(self, kw_list, timeframe: str, geo: str, gprop: str = "") -> None:
             return None
 
         def interest_over_time(self) -> pd.DataFrame:

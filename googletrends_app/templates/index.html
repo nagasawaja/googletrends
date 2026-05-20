@@ -6,9 +6,12 @@
     <h1>关键词监控</h1>
     <p>全球范围，多周期监控：默认 now 7-d 抓短线异动，today 3-m 确认趋势；首页展示每个关键词当前最短可用周期的趋势。</p>
   </div>
-  <form method="post" action="/collect/run-now">
-    <button class="button primary" type="submit">创建全部监控任务</button>
-  </form>
+  <div class="page-head-actions">
+    <form method="post" action="/collect/run-now">
+      <button class="button primary" type="submit">创建全部监控任务</button>
+    </form>
+    <a class="button" href="{{ edit_toggle_url }}">{{ "退出编辑模式" if edit_mode else "进入编辑模式" }}</a>
+  </div>
 </section>
 
 <section class="panel">
@@ -19,11 +22,44 @@
   </form>
 </section>
 
+{% if edit_mode %}
+  <section class="panel bulk-panel">
+    <div class="section-head">
+      <h2>批量监控周期</h2>
+      <span>勾选多个关键词后，可统一添加或删除多个周期。</span>
+    </div>
+    <form id="bulk-timeframe-form" class="bulk-timeframe-form" method="post" action="/keywords/timeframes/bulk">
+      <input type="hidden" name="next_url" value="{{ bulk_next_url }}">
+      <div class="bulk-timeframe-options">
+        <span class="summary-label">周期（可多选）</span>
+        <div class="timeframe-options bulk-timeframe-grid">
+          {% for item in available_timeframes %}
+            <label class="checkbox-option">
+              <input type="checkbox" name="timeframes" value="{{ item }}">
+              <span>{{ item }}</span>
+            </label>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="bulk-actions">
+        <button class="button" type="button" data-select-all>全选</button>
+        <button class="button" type="button" data-select-none>取消全选</button>
+        <button class="button" type="button" data-select-timeframes-all>全选周期</button>
+        <button class="button" type="button" data-select-timeframes-none>清空周期</button>
+        <button class="button" type="submit" name="action" value="add">批量添加</button>
+        <button class="button danger" type="submit" name="action" value="remove">批量删除</button>
+      </div>
+    </form>
+  </section>
+{% endif %}
+
 <section class="table-wrap">
   <table>
     <thead>
       <tr>
+        {% if edit_mode %}<th>选择</th>{% endif %}
         <th>关键词</th>
+        {% if edit_mode %}<th>监控周期</th>{% endif %}
         <th>趋势</th>
         <th>状态</th>
         <th>趋势点</th>
@@ -39,6 +75,11 @@
       {% for item in keyword_items %}
         {% set keyword = item.keyword %}
         <tr>
+          {% if edit_mode %}
+            <td>
+              <input form="bulk-timeframe-form" type="checkbox" name="keyword_ids" value="{{ keyword.id }}">
+            </td>
+          {% endif %}
           <td class="keyword-cell">
             <a class="strong-link" href="/keywords/{{ keyword.id }}">{{ keyword.term }}</a>
             <div
@@ -51,9 +92,15 @@
               </button>
             </div>
           </td>
+          {% if edit_mode %}
+            <td class="keyword-timeframes">
+              <span>{{ item.selected_timeframes_text }}</span>
+            </td>
+          {% endif %}
           <td class="trend-preview-cell">
             <div class="trend-preview-head">
-              <a href="/keywords/{{ keyword.id }}?timeframe={{ item.preview_timeframe }}">{{ item.preview_timeframe }}</a>
+              <a href="/keywords/{{ keyword.id }}?timeframe={{ item.preview_timeframe }}&gprop={{ item.preview_gprop }}">{{ item.preview_timeframe }}</a>
+              <span>{{ item.preview_gprop_label }}</span>
               {% if item.preview_latest %}
                 <span>最新 {{ item.preview_latest.value }}</span>
               {% endif %}
@@ -114,7 +161,7 @@
         </tr>
       {% else %}
         <tr>
-          <td colspan="10" class="empty">还没有关键词。</td>
+          <td colspan="{{ 12 if edit_mode else 10 }}" class="empty">还没有关键词。</td>
         </tr>
       {% endfor %}
     </tbody>
@@ -124,4 +171,7 @@
 {% block scripts %}
 <script src="{{ url_for('static', path='/remark-editor.js') }}"></script>
 <script src="{{ url_for('static', path='/chart-tooltip.js') }}"></script>
+{% if edit_mode %}
+  <script src="{{ url_for('static', path='/bulk-edit.js') }}"></script>
+{% endif %}
 {% endblock %}

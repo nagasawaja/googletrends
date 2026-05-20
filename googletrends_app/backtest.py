@@ -42,7 +42,12 @@ def run_keyword_backtest(
     if keyword is None:
         raise LookupError(f"Keyword id {keyword_id} was not found.")
 
-    raw_points = repository.list_trend_points(conn, keyword_id, timeframe=timeframe)
+    raw_points = repository.list_trend_points(
+        conn,
+        keyword_id,
+        timeframe=timeframe,
+        gprop=repository.keyword_gprop(keyword),
+    )
     points = collector.normalized_alert_points(raw_points, timeframe)
     events = simulate_events(
         points,

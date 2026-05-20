@@ -80,6 +80,13 @@ a {
   margin-bottom: 18px;
 }
 
+.page-head-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 h1,
 h2 {
   letter-spacing: 0;
@@ -234,6 +241,14 @@ tr:last-child td {
   margin-top: 6px;
 }
 
+.keyword-timeframes {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  min-width: 170px;
+  vertical-align: top;
+}
+
 .trend-preview-cell {
   min-width: 360px;
   vertical-align: top;
@@ -377,9 +392,27 @@ tr:last-child td {
   vector-effect: non-scaling-stroke;
 }
 
+.axis-tick {
+  stroke: #c3c9d4;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
 .axis-label {
   fill: var(--muted);
   font-size: 12px;
+}
+
+.axis-label-x {
+  font-size: 11px;
+}
+
+.axis-label-y {
+  font-size: 12px;
+}
+
+.source-options {
+  margin-bottom: 12px;
 }
 
 .trend-line {
@@ -578,6 +611,36 @@ tr:last-child td {
   margin: 14px 0 0;
 }
 
+.bulk-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.bulk-timeframe-options {
+  display: grid;
+  gap: 8px;
+}
+
+.bulk-timeframe-grid {
+  max-width: 760px;
+}
+
+.bulk-timeframe-form {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.bulk-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.bulk-actions .button {
+  min-width: 104px;
+}
+
 .backtest-form {
   grid-template-columns: minmax(220px, 1fr) minmax(180px, 260px) auto;
 }
@@ -594,6 +657,10 @@ tr:last-child td {
   font-size: 12px;
   font-weight: 750;
   margin-bottom: 4px;
+}
+
+.table-wrap input[type="checkbox"] {
+  transform: translateY(1px);
 }
 
 .proxy-grid {
