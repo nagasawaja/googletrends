@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 
@@ -143,6 +144,19 @@ def initialize_database(db_path: str | Path) -> None:
     path = Path(db_path)
     if str(path) != ":memory:":
         path.parent.mkdir(parents=True, exist_ok=True)
+    if str(path) != ":memory:" and path.exists():
+        try:
+            with connect(path) as conn:
+                result = conn.execute("PRAGMA integrity_check").fetchone()
+                if result is None or str(result[0]).strip().lower() != "ok":
+                    raise sqlite3.DatabaseError(
+                        f"database integrity check failed: {result[0] if result else 'unknown'}"
+                    )
+        except sqlite3.DatabaseError:
+            backup_path = path.with_name(
+                f"{path.name}.corrupt-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            )
+            path.replace(backup_path)
     with connect(path) as conn:
         conn.executescript(SCHEMA)
         run_migrations(conn)

@@ -607,6 +607,19 @@ def test_startup_requeues_stale_running_jobs(tmp_path) -> None:
             assert refreshed["started_at"] is None
 
 
+def test_startup_recovers_malformed_database(tmp_path) -> None:
+    db_path = tmp_path / "test.sqlite3"
+    db_path.write_bytes(b"not a sqlite database")
+
+    provider = FakeProvider()
+    with make_client(tmp_path, provider) as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert "还没有关键词。" in response.text
+    assert any(path.name.startswith("test.sqlite3.corrupt-") for path in tmp_path.iterdir())
+
+
 def test_migration_adds_collection_job_attempt_metadata_columns(tmp_path) -> None:
     db_path = tmp_path / "test.sqlite3"
     with sqlite3.connect(db_path) as conn:
