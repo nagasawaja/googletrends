@@ -58,8 +58,13 @@ def load_settings() -> Settings:
         "1",
     )
     clash_controller_url = os.getenv("GOOGLETRENDS_CLASH_CONTROLLER_URL") or None
-    clash_enabled = getenv_bool("GOOGLETRENDS_CLASH_ENABLED") or bool(clash_controller_url)
-    clash_proxy_url = os.getenv("GOOGLETRENDS_CLASH_PROXY_URL", "http://127.0.0.1:7890")
+    clash_enabled_env = os.getenv("GOOGLETRENDS_CLASH_ENABLED")
+    clash_enabled = (
+        getenv_bool("GOOGLETRENDS_CLASH_ENABLED")
+        if clash_enabled_env is not None
+        else bool(clash_controller_url)
+    )
+    clash_proxy_url = os.getenv("GOOGLETRENDS_CLASH_PROXY_URL", "http://127.0.0.1:7897")
     clash_secret = os.getenv("GOOGLETRENDS_CLASH_SECRET") or None
     clash_proxy_group = os.getenv("GOOGLETRENDS_CLASH_PROXY_GROUP", "Google")
     clash_config_path = Path(

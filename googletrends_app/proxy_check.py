@@ -246,11 +246,7 @@ def resolve_clash_controller(
 ) -> tuple[ClashController | None, str]:
     if clash_controller is not None:
         return clash_controller, ""
-    if not (
-        settings.clash_enabled
-        or settings.clash_controller_url
-        or settings.proxy_auto_detect_local_clash
-    ):
+    if not (settings.clash_enabled or settings.proxy_auto_detect_local_clash):
         return None, "Clash controller 未启用。"
 
     try:

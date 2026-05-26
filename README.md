@@ -40,10 +40,10 @@ GOOGLETRENDS_P2_ALERT_COOLDOWN_HOURS=24
 GOOGLETRENDS_PROXY_URLS=http://user:pass@proxy.example:8080,socks5h://proxy.example:1080
 GOOGLETRENDS_PROXY_SUBSCRIPTION_URL=https://example.com/subscription
 GOOGLETRENDS_PROXY_REFRESH_SECONDS=3600
-GOOGLETRENDS_PROXY_AUTO_DETECT_LOCAL_CLASH=1
-GOOGLETRENDS_CLASH_ENABLED=1
-GOOGLETRENDS_CLASH_PROXY_URL=http://127.0.0.1:7890
-GOOGLETRENDS_CLASH_CONTROLLER_URL=http://127.0.0.1:49266
+GOOGLETRENDS_PROXY_AUTO_DETECT_LOCAL_CLASH=0
+GOOGLETRENDS_CLASH_ENABLED=0
+GOOGLETRENDS_CLASH_PROXY_URL=http://127.0.0.1:7897
+GOOGLETRENDS_CLASH_CONTROLLER_URL=
 GOOGLETRENDS_CLASH_SECRET=your-clash-secret
 GOOGLETRENDS_CLASH_PROXY_GROUP=Google
 GOOGLETRENDS_CLASH_CONFIG_PATH=~/.config/clash/config.yaml
@@ -70,18 +70,22 @@ at its local mixed-port instead.
 
 When no explicit proxy is configured, `GOOGLETRENDS_PROXY_AUTO_DETECT_LOCAL_CLASH=1`
 lets the app use `GOOGLETRENDS_CLASH_PROXY_URL` automatically if the local Clash port is
-listening. This covers the common local ClashX `127.0.0.1:7890` setup without enabling
+listening. This covers the common local Clash Verge `127.0.0.1:7897` setup without enabling
 the Clash controller API.
 
-For a local ClashX Pro setup, prefer the Clash gateway mode:
+For a local Clash Verge setup, prefer the gateway mode:
 
 ```bash
-GOOGLETRENDS_CLASH_ENABLED=1
-GOOGLETRENDS_CLASH_PROXY_URL=http://127.0.0.1:7890
-GOOGLETRENDS_CLASH_PROXY_GROUP=Google
+GOOGLETRENDS_PROXY_URLS=http://127.0.0.1:7897
+GOOGLETRENDS_PROXY_AUTO_DETECT_LOCAL_CLASH=0
+GOOGLETRENDS_CLASH_ENABLED=0
+GOOGLETRENDS_CLASH_PROXY_URL=http://127.0.0.1:7897
 ```
 
-When enabled, the app sends pytrends traffic through the local Clash proxy URL.
+When gateway mode is configured, the app sends pytrends traffic through the local
+Clash Verge mixed-port. Clash controller rotation is optional and should only be enabled
+when a reachable HTTP external-controller URL is available.
+When controller mode is enabled, the app sends pytrends traffic through the local Clash proxy URL.
 On a Google 429 or other request failure, it calls the Clash controller API, switches the
 currently effective proxy group to the next candidate, then retries the collection once.
 In Clash `global` mode this means `GLOBAL`; otherwise it uses `GOOGLETRENDS_CLASH_PROXY_GROUP`.
@@ -99,8 +103,8 @@ docker compose up -d --build
 ```
 
 Open <http://127.0.0.1:8000>. The compose service mounts `./data` into the container, so SQLite data survives container restarts.
-By default the container sends outbound traffic through the host Clash proxy at
-`http://host.docker.internal:7890`, and it disables local auto-detection so the container
+By default the container sends outbound traffic through the host Clash Verge proxy at
+`http://host.docker.internal:7897`, and it disables local auto-detection so the container
 does not mistake its own loopback for the host proxy. That means the first collection
 attempt in Docker goes through the proxy if the host port is reachable.
 
