@@ -177,7 +177,11 @@ def run_proxy_check(
     if direct_error:
         warning = f"直连检测失败：{direct_error}"
     elif direct_ip and proxy_ip and direct_ip == proxy_ip:
-        warning = "代理请求成功，但代理出口 IP 和直连 IP 一致，请确认 Clash 规则没有走 DIRECT。"
+        warning = (
+            "代理请求成功，且请求已使用本次代理入口发起；代理出口 IP 和直连检测 IP 一致。"
+            "如果 Docker、Clash Verge TUN 或系统代理已开启，直连检测也可能被同一代理接管，"
+            "此时应以代理请求成功和 Clash 连接日志作为主要判断。"
+        )
 
     return ProxyCheckResult(
         ok=not proxy_error,

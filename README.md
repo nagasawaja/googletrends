@@ -41,11 +41,11 @@ GOOGLETRENDS_PROXY_URLS=http://user:pass@proxy.example:8080,socks5h://proxy.exam
 GOOGLETRENDS_PROXY_SUBSCRIPTION_URL=https://example.com/subscription
 GOOGLETRENDS_PROXY_REFRESH_SECONDS=3600
 GOOGLETRENDS_PROXY_AUTO_DETECT_LOCAL_CLASH=0
-GOOGLETRENDS_CLASH_ENABLED=0
+GOOGLETRENDS_CLASH_ENABLED=1
 GOOGLETRENDS_CLASH_PROXY_URL=http://127.0.0.1:7897
-GOOGLETRENDS_CLASH_CONTROLLER_URL=
+GOOGLETRENDS_CLASH_CONTROLLER_URL=http://127.0.0.1:9097
 GOOGLETRENDS_CLASH_SECRET=your-clash-secret
-GOOGLETRENDS_CLASH_PROXY_GROUP=Google
+GOOGLETRENDS_CLASH_PROXY_GROUP=Proxies
 GOOGLETRENDS_CLASH_CONFIG_PATH=~/.config/clash/config.yaml
 GOOGLETRENDS_CLASH_SKIP_PROXY_NAMES=DIRECT,REJECT,REJECT-DROP,PASS
 GOOGLETRENDS_CLASH_ALLOWED_PROXY_NAME_KEYWORDS=香港,日本,美国,新加坡,狮城,台湾
@@ -78,13 +78,25 @@ For a local Clash Verge setup, prefer the gateway mode:
 ```bash
 GOOGLETRENDS_PROXY_URLS=http://127.0.0.1:7897
 GOOGLETRENDS_PROXY_AUTO_DETECT_LOCAL_CLASH=0
-GOOGLETRENDS_CLASH_ENABLED=0
+GOOGLETRENDS_CLASH_ENABLED=1
 GOOGLETRENDS_CLASH_PROXY_URL=http://127.0.0.1:7897
+GOOGLETRENDS_CLASH_CONTROLLER_URL=http://127.0.0.1:9097
+GOOGLETRENDS_CLASH_PROXY_GROUP=Proxies
 ```
 
 When gateway mode is configured, the app sends pytrends traffic through the local
 Clash Verge mixed-port. Clash controller rotation is optional and should only be enabled
 when a reachable HTTP external-controller URL is available.
+Clash Verge Rev currently exposes Mihomo's controller through
+`/tmp/verge/verge-mihomo.sock`; if the HTTP external-controller is not listening,
+run the local bridge before starting the Docker app:
+
+```bash
+python scripts/clash_verge_controller_bridge.py --host 127.0.0.1 --port 9097
+```
+
+In Docker, use `http://host.docker.internal:9097` for
+`GOOGLETRENDS_CLASH_CONTROLLER_URL`.
 When controller mode is enabled, the app sends pytrends traffic through the local Clash proxy URL.
 On a Google 429 or other request failure, it calls the Clash controller API, switches the
 currently effective proxy group to the next candidate, then retries the collection once.
